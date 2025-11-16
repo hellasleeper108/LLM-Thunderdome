@@ -13,8 +13,9 @@ import { EventLog } from './components/EventLog';
 import { SimulationControls } from './components/SimulationControls';
 import { ReplayViewer } from './components/ReplayViewer';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
+import { ClusterControlPanel } from './components/ClusterControlPanel';
 
-type ViewMode = 'simulation' | 'analytics';
+type ViewMode = 'simulation' | 'analytics' | 'cluster';
 type RenderMode = '2d' | '3d';
 
 function App() {
@@ -132,6 +133,16 @@ function App() {
           >
             Analytics
           </button>
+          <button
+            onClick={() => setViewMode('cluster')}
+            className={`px-4 py-2 rounded ${
+              viewMode === 'cluster'
+                ? 'bg-blue-600 text-white'
+                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+            }`}
+          >
+            Cluster
+          </button>
         </div>
       </header>
 
@@ -192,9 +203,13 @@ function App() {
               </div>
             </div>
           </>
-        ) : (
+        ) : viewMode === 'analytics' ? (
           <div className="h-full">
             <AnalyticsDashboard />
+          </div>
+        ) : (
+          <div className="h-full">
+            <ClusterControlPanel />
           </div>
         )}
       </main>

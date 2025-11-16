@@ -16,6 +16,7 @@ import { getPreset, getAllPresetNames, createGoalsFromPersonality } from './simu
 import { getPersonality, ALL_PERSONALITIES } from './agents/personalities';
 import { Position } from './schemas/types';
 import { AnalyticsEngine } from './analytics';
+import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
 
 const app = express();
 const server = createServer(app);
@@ -30,6 +31,10 @@ let world: World | null = null;
 let engine: SimulationEngine | null = null;
 let logger: EventLogger | null = null;
 let stateManager: StateManager | null = null;
+
+// Cluster state
+let simulationCluster: SimulationCluster | null = null;
+let clusterResults: AggregatedResults | null = null;
 
 // WebSocket clients
 const clients = new Set<WebSocket>();
@@ -737,6 +742,157 @@ app.get('/api/analytics/survival', (req, res) => {
   }
 });
 
+/**
+ * POST /api/cluster/start
+ * Start a cluster of simulations running in parallel
+ */
+app.post('/api/cluster/start', async (req, res) => {
+  try {
+    const { simulationCount, preset: presetName, randomizeSeed, autoAdvance } = req.body;
+
+    if (!simulationCount || simulationCount < 1 || simulationCount > 20) {
+      return res.status(400).json({
+        error: 'simulationCount must be between 1 and 20',
+      });
+    }
+
+    // Load preset
+    const preset = getPreset(presetName || 'cooperative');
+    if (!preset) {
+      return res.status(400).json({ error: 'Invalid preset' });
+    }
+
+    // Create cluster config
+    const clusterConfig: ClusterConfig = {
+      simulationCount,
+      preset,
+      randomizeSeed: randomizeSeed ?? true,
+      autoAdvance: autoAdvance ?? true,
+    };
+
+    console.log(
+      `[Cluster API] Starting cluster with ${simulationCount} simulations (preset: ${preset.name})`
+    );
+
+    // Create and initialize cluster
+    simulationCluster = new SimulationCluster(clusterConfig);
+    simulationCluster.initialize();
+
+    // Run simulations in parallel (async)
+    const clusterId = simulationCluster.getClusterId();
+
+    // Start execution asynchronously
+    simulationCluster.runMultipleSimulationsInParallel().then(() => {
+      console.log(`[Cluster ${clusterId}] All simulations completed`);
+
+      // Aggregate results
+      clusterResults = simulationCluster!.aggregateResults();
+
+      // Broadcast completion to WebSocket clients
+      broadcast({
+        type: 'cluster_completed',
+        data: {
+          clusterId,
+          results: clusterResults,
+        },
+      });
+    }).catch((error) => {
+      console.error(`[Cluster ${clusterId}] Error:`, error);
+    });
+
+    res.json({
+      clusterId,
+      status: 'started',
+      simulationCount,
+      preset: preset.name,
+    });
+  } catch (error: any) {
+    console.error('Error starting cluster:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/cluster/status
+ * Get the status of the running cluster
+ */
+app.get('/api/cluster/status', (req, res) => {
+  if (!simulationCluster) {
+    return res.json({
+      active: false,
+      message: 'No cluster is currently running',
+    });
+  }
+
+  const status = simulationCluster.getStatus();
+  res.json({
+    active: true,
+    ...status,
+  });
+});
+
+/**
+ * GET /api/cluster/results
+ * Get the aggregated results from the cluster
+ */
+app.get('/api/cluster/results', (req, res) => {
+  if (!simulationCluster) {
+    return res.status(400).json({ error: 'No cluster created' });
+  }
+
+  if (!clusterResults) {
+    // Generate results if not already done
+    clusterResults = simulationCluster.aggregateResults();
+  }
+
+  const comparison = simulationCluster.compareSimOutcomes();
+
+  res.json({
+    results: clusterResults,
+    comparison,
+  });
+});
+
+/**
+ * GET /api/cluster/outcomes
+ * Get individual simulation outcomes
+ */
+app.get('/api/cluster/outcomes', (req, res) => {
+  if (!simulationCluster) {
+    return res.status(400).json({ error: 'No cluster created' });
+  }
+
+  const outcomes = simulationCluster.getOutcomes();
+  res.json({ outcomes });
+});
+
+/**
+ * POST /api/cluster/pause
+ * Pause all running simulations in the cluster
+ */
+app.post('/api/cluster/pause', (req, res) => {
+  if (!simulationCluster) {
+    return res.status(400).json({ error: 'No cluster created' });
+  }
+
+  simulationCluster.pauseAll();
+  res.json({ message: 'Cluster paused' });
+});
+
+/**
+ * POST /api/cluster/reset
+ * Reset the cluster
+ */
+app.post('/api/cluster/reset', (req, res) => {
+  if (!simulationCluster) {
+    return res.status(400).json({ error: 'No cluster created' });
+  }
+
+  simulationCluster.resetAll();
+  clusterResults = null;
+  res.json({ message: 'Cluster reset' });
+});
+
 // Start server
 const PORT = process.env.PORT || 3001;
 
@@ -752,11 +908,10 @@ server.listen(PORT, () => {
 ║  API Documentation:                                   ║
 ║  - POST /api/simulation/create                        ║
 ║  - POST /api/simulation/start                         ║
-║  - POST /api/simulation/pause                         ║
-║  - POST /api/simulation/step                          ║
-║  - GET  /api/simulation/state                         ║
+║  - POST /api/cluster/start                            ║
+║  - GET  /api/cluster/results                          ║
 ║  - GET  /api/presets                                  ║
-║  - GET  /api/personalities                            ║
+║  - GET  /api/analytics/metrics                        ║
 ║                                                       ║
 ╚═══════════════════════════════════════════════════════╝
   `);
