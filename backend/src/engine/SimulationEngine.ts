@@ -6,6 +6,7 @@
 import { BaseAgent } from '../agents/BaseAgent';
 import { AllianceManager } from '../agents/AllianceManager';
 import { SocialGraph } from '../agents/SocialGraph';
+import { TraitDrift } from '../agents/TraitDrift';
 import { World } from '../world/World';
 import { EventLogger } from '../logging/EventLogger';
 import { NegotiationEngine } from './NegotiationEngine';
@@ -41,6 +42,7 @@ export class SimulationEngine {
   private socialGraph: SocialGraph;
   private negotiationEngine: NegotiationEngine;
   private allianceManager: AllianceManager;
+  private traitDrift: TraitDrift;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -58,6 +60,7 @@ export class SimulationEngine {
 
     this.negotiationEngine = new NegotiationEngine(this.socialGraph);
     this.allianceManager = new AllianceManager(this.socialGraph);
+    this.traitDrift = new TraitDrift(this.socialGraph, 1.0); // 1.0 = normal drift rate
 
     this.config = {
       turnDuration: config.turnDuration,
@@ -174,6 +177,7 @@ export class SimulationEngine {
     this.world.reset();
     this.negotiationEngine.reset();
     this.allianceManager.reset();
+    this.traitDrift.reset();
     this.status = 'idle';
 
     // Reset all agents
@@ -222,6 +226,9 @@ export class SimulationEngine {
 
     // Phase 6: Update alliances
     this.updateAlliances();
+
+    // Phase 7: Apply trait drift
+    this.applyTraitDrift();
 
     this.logger.logEvent({
       type: 'state_update',
@@ -433,6 +440,9 @@ export class SimulationEngine {
       metadata: { action, effects },
     });
 
+    // Record action for trait drift
+    this.traitDrift.recordAction(action.agentId, action.type, success);
+
     return {
       success,
       action,
@@ -494,6 +504,9 @@ export class SimulationEngine {
       agent.updateInventory(inventoryUpdate);
       effects.push(`Gathered ${result.amount} ${resourceKey}`);
 
+      // Record resource gain for trait drift
+      this.traitDrift.recordResourceGained(state.id, result.amount);
+
       this.logger.logEvent({
         type: 'resource_change',
         description: `${state.name} gathered ${result.amount} ${resourceKey}`,
@@ -531,6 +544,9 @@ export class SimulationEngine {
       // Record betrayal attempt (weakens alliance)
       this.allianceManager.recordBetrayal(attacker.id, targetId, 20);
 
+      // Record betrayal for trait drift
+      this.traitDrift.recordBetrayalReceived(targetId);
+
       this.logger.logEvent({
         type: 'interaction',
         description: `${attacker.name} attempted to attack ally ${targetState.name} but was prevented by alliance`,
@@ -547,15 +563,27 @@ export class SimulationEngine {
 
     effects.push(`Dealt ${damage} damage to ${targetState.name}`);
 
+    // Record attack for trait drift
+    this.traitDrift.recordAttackGiven(attacker.id);
+    this.traitDrift.recordAttackReceived(targetId);
+
     if (!target.getState().isAlive) {
       effects.push(`${targetState.name} was killed`);
 
       // Transfer inventory
+      const lootedResources = Math.floor(targetState.inventory.food / 2) +
+        Math.floor(targetState.inventory.water / 2) +
+        Math.floor(targetState.inventory.material / 2);
+
       agent.updateInventory({
         food: attacker.inventory.food + Math.floor(targetState.inventory.food / 2),
         water: attacker.inventory.water + Math.floor(targetState.inventory.water / 2),
         material: attacker.inventory.material + Math.floor(targetState.inventory.material / 2),
       });
+
+      // Record death and resource gain
+      this.traitDrift.recordDeath(targetId);
+      this.traitDrift.recordResourceGained(attacker.id, lootedResources);
 
       this.logger.logEvent({
         type: 'interaction',
@@ -735,6 +763,12 @@ export class SimulationEngine {
     // Apply effects based on outcome
     if (outcome.success) {
       this.applyNegotiationOutcome(outcome, agent, target, effects);
+
+      // Record trade completion for trait drift
+      if (offer.protocol === NegotiationProtocol.TRADE) {
+        this.traitDrift.recordTradeCompleted(negotiator.id);
+        this.traitDrift.recordTradeCompleted(targetState.id);
+      }
     } else {
       effects.push(`Negotiation rejected: ${response.reason}`);
 
@@ -907,6 +941,10 @@ export class SimulationEngine {
       target.formAlliance(requester.id);
 
       effects.push(`Formed alliance with ${targetState.name} (Strength: ${alliance.strength})`);
+
+      // Record alliance formation for trait drift
+      this.traitDrift.recordAllianceFormed(requester.id);
+      this.traitDrift.recordAllianceFormed(targetId);
 
       this.logger.logEvent({
         type: 'interaction',
@@ -1127,6 +1165,52 @@ export class SimulationEngine {
   }
 
   /**
+   * Apply trait drift to all agents
+   * Called each turn to evolve agent personalities based on experiences
+   */
+  private applyTraitDrift(): void {
+    const worldTiles = this.world.getAllTiles();
+
+    for (const [agentId, agent] of this.agents.entries()) {
+      const state = agent.getState();
+
+      if (!state.isAlive) {
+        continue;
+      }
+
+      // Get nearby agent IDs for social context
+      const nearbyAgentIds = this.getNearbyAgents(agentId, this.config.visionRadius)
+        .map(a => a.id);
+
+      // Apply drift
+      const driftResult = this.traitDrift.tick(agent, worldTiles, nearbyAgentIds);
+
+      // Log significant drift (magnitude > 1.0)
+      if (driftResult.magnitude > 1.0) {
+        const changeDescriptions = Object.entries(driftResult.changes)
+          .map(([stat, newValue]) => {
+            const oldValue = state.stats[stat as keyof typeof state.stats];
+            const delta = (newValue as number) - oldValue;
+            const sign = delta > 0 ? '+' : '';
+            return `${stat}: ${oldValue.toFixed(1)} → ${(newValue as number).toFixed(1)} (${sign}${delta.toFixed(1)})`;
+          });
+
+        this.logger.logEvent({
+          type: 'state_update',
+          description: `${state.name}'s personality shifting: ${driftResult.reasons.join('; ')}`,
+          agentIds: [agentId],
+          metadata: {
+            changes: driftResult.changes,
+            reasons: driftResult.reasons,
+            magnitude: driftResult.magnitude,
+            changeDescriptions,
+          },
+        });
+      }
+    }
+  }
+
+  /**
    * Get nearby agents
    */
   private getNearbyAgents(agentId: string, radius: number): AgentState[] {
@@ -1280,5 +1364,12 @@ export class SimulationEngine {
    */
   getSocialGraph(): SocialGraph {
     return this.socialGraph;
+  }
+
+  /**
+   * Get trait drift (for personality evolution queries)
+   */
+  getTraitDrift(): TraitDrift {
+    return this.traitDrift;
   }
 }
