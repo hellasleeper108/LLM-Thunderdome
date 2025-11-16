@@ -208,6 +208,90 @@ export abstract class BaseAgent {
   }
 
   /**
+   * Get all current allies
+   */
+  getAllies(): string[] {
+    return [...this.state.allegiances];
+  }
+
+  /**
+   * Get count of current alliances
+   */
+  getAllianceCount(): number {
+    return this.state.allegiances.length;
+  }
+
+  /**
+   * Request alliance with another agent
+   * Returns a message indicating willingness to ally
+   */
+  requestAlliance(targetId: string, reason?: string): Message {
+    const message = this.sendMessage(
+      targetId,
+      reason || `I propose we form an alliance for mutual benefit.`,
+      'alliance'
+    );
+
+    this.addToMemory({
+      timestamp: Date.now(),
+      type: 'interaction',
+      content: `Requested alliance with ${targetId}`,
+    });
+
+    return message;
+  }
+
+  /**
+   * Evaluate alliance worthiness based on personality
+   * Returns score 0-100 indicating willingness to ally
+   */
+  evaluateAllianceProposal(proposerId: string, proposerStats: AgentStats): number {
+    let score = 50; // Base willingness
+
+    // High cooperation = more willing to ally
+    score += (this.state.stats.cooperation - 50) * 0.5;
+
+    // High empathy = more willing to ally
+    score += (this.state.stats.empathy - 50) * 0.3;
+
+    // Similar cooperation levels = better match
+    const cooperationDiff = Math.abs(this.state.stats.cooperation - proposerStats.cooperation);
+    score -= cooperationDiff * 0.2;
+
+    // Very aggressive agents are suspicious
+    if (proposerStats.aggression > 80) {
+      score -= 20;
+    }
+
+    // Already have many allies? Less eager
+    score -= this.state.allegiances.length * 5;
+
+    // Low health? More eager for protection
+    if (this.state.health < 50) {
+      score += 15;
+    }
+
+    return Math.max(0, Math.min(100, score));
+  }
+
+  /**
+   * Decide whether to help an ally
+   */
+  shouldHelpAlly(allyId: string, cost: number): boolean {
+    if (!this.isAlliedWith(allyId)) {
+      return false;
+    }
+
+    // High cooperation = more likely to help
+    const willingnessScore = this.state.stats.cooperation + this.state.stats.empathy;
+
+    // Can we afford it?
+    const canAfford = this.state.stats.energy > cost * 2;
+
+    return willingnessScore > 100 && canAfford;
+  }
+
+  /**
    * Get current state (immutable copy)
    */
   getState(): Readonly<AgentState> {

@@ -4,6 +4,7 @@
  */
 
 import { BaseAgent } from '../agents/BaseAgent';
+import { AllianceManager } from '../agents/AllianceManager';
 import { World } from '../world/World';
 import { EventLogger } from '../logging/EventLogger';
 import { NegotiationEngine } from './NegotiationEngine';
@@ -19,6 +20,7 @@ import {
   NegotiationOffer,
   NegotiationProtocol,
   ResourceOffer,
+  Alliance,
 } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -36,6 +38,7 @@ export class SimulationEngine {
   private agents: Map<string, BaseAgent>;
   private logger: EventLogger;
   private negotiationEngine: NegotiationEngine;
+  private allianceManager: AllianceManager;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -48,6 +51,7 @@ export class SimulationEngine {
     this.agents = new Map();
     this.logger = logger;
     this.negotiationEngine = new NegotiationEngine();
+    this.allianceManager = new AllianceManager();
     this.config = {
       turnDuration: config.turnDuration,
       maxTurns: config.maxTurns,
@@ -162,6 +166,7 @@ export class SimulationEngine {
     this.actionResults = [];
     this.world.reset();
     this.negotiationEngine.reset();
+    this.allianceManager.reset();
     this.status = 'idle';
 
     // Reset all agents
@@ -208,6 +213,9 @@ export class SimulationEngine {
     // Phase 5: Process events
     this.processEvents();
 
+    // Phase 6: Update alliances
+    this.updateAlliances();
+
     this.logger.logEvent({
       type: 'state_update',
       description: `Turn ${this.currentTurn} completed`,
@@ -222,10 +230,12 @@ export class SimulationEngine {
 
   /**
    * Generate observations for all agents
+   * Allied agents share partial observations
    */
   private generateObservations(): Map<string, Observation> {
     const observations = new Map<string, Observation>();
 
+    // First pass: generate base observations
     for (const [agentId, agent] of this.agents.entries()) {
       const state = agent.getState();
 
@@ -242,6 +252,61 @@ export class SimulationEngine {
       };
 
       observations.set(agentId, observation);
+    }
+
+    // Second pass: enhance observations with ally information
+    for (const [agentId, observation] of observations.entries()) {
+      const agent = this.agents.get(agentId);
+      if (!agent) continue;
+
+      const state = agent.getState();
+      const allyIds = this.allianceManager.getAllyIds(agentId);
+
+      // Share ally observations (partial information sharing)
+      for (const allyId of allyIds) {
+        const allyObservation = observations.get(allyId);
+        if (!allyObservation) continue;
+
+        const alliance = this.allianceManager.getAlliances(agentId).find((a) =>
+          a.memberIds.includes(allyId)
+        );
+
+        // Only share if alliance has resourceSharing enabled
+        if (alliance?.conditions.resourceSharing) {
+          // Add ally's visible agents (that this agent can't see)
+          const currentVisibleIds = new Set(observation.nearbyAgents.map((a) => a.id));
+          for (const allyVisibleAgent of allyObservation.nearbyAgents) {
+            if (!currentVisibleIds.has(allyVisibleAgent.id) && allyVisibleAgent.id !== agentId) {
+              // Add with reduced information (they heard about it from ally)
+              observation.nearbyAgents.push({
+                ...allyVisibleAgent,
+                position: { x: -1, y: -1 }, // Unknown exact position
+              });
+            }
+          }
+
+          // Share information about resources (rumors from ally)
+          const allyResourceTiles = allyObservation.visibleTiles.filter((t) =>
+            t.type.startsWith('resource')
+          );
+          const currentTilePositions = new Set(
+            observation.visibleTiles.map((t) => `${t.position.x},${t.position.y}`)
+          );
+
+          for (const resourceTile of allyResourceTiles) {
+            const key = `${resourceTile.position.x},${resourceTile.position.y}`;
+            if (!currentTilePositions.has(key)) {
+              // Add rumored resource (with some uncertainty)
+              observation.visibleTiles.push({
+                ...resourceTile,
+                value: resourceTile.value ? Math.floor(resourceTile.value * 0.7) : undefined,
+                metadata: { ...resourceTile.metadata, rumored: true, source: allyId },
+              });
+            }
+          }
+        }
+      }
+
       agent.observe(observation);
     }
 
@@ -435,6 +500,7 @@ export class SimulationEngine {
 
   /**
    * Handle attack action
+   * Allied agents with exclusivity cannot attack each other
    */
   private handleAttack(agent: BaseAgent, targetId: string, effects: string[]): boolean {
     const attacker = agent.getState();
@@ -446,6 +512,27 @@ export class SimulationEngine {
     }
 
     const targetState = target.getState();
+
+    // Check if they are allies with exclusivity
+    const alliance = this.allianceManager
+      .getAlliances(attacker.id)
+      .find((a) => a.memberIds.includes(targetId));
+
+    if (alliance && alliance.conditions.exclusivity) {
+      effects.push(`Cannot attack ally ${targetState.name} (alliance exclusivity)`);
+
+      // Record betrayal attempt (weakens alliance)
+      this.allianceManager.recordBetrayal(attacker.id, targetId, 20);
+
+      this.logger.logEvent({
+        type: 'interaction',
+        description: `${attacker.name} attempted to attack ally ${targetState.name} but was prevented by alliance`,
+        agentIds: [attacker.id, targetId],
+        metadata: { allianceId: alliance.id },
+      });
+
+      return false;
+    }
 
     // Calculate damage based on aggression
     const damage = Math.floor(attacker.stats.aggression / 5) + Math.floor(Math.random() * 10);
@@ -769,6 +856,7 @@ export class SimulationEngine {
 
   /**
    * Handle form alliance action
+   * Uses AllianceManager for sophisticated alliance management
    */
   private handleFormAlliance(agent: BaseAgent, targetId: string, payload: any, effects: string[]): boolean {
     const requester = agent.getState();
@@ -781,23 +869,50 @@ export class SimulationEngine {
 
     const targetState = target.getState();
 
-    // Simple alliance logic: if cooperation is high enough, accept
-    const acceptChance = (targetState.stats.cooperation + requester.stats.cooperation) / 200;
-    const accepted = Math.random() < acceptChance;
+    // Check if already allied
+    if (this.allianceManager.areAllied(requester.id, targetId)) {
+      effects.push(`Already allied with ${targetState.name}`);
+      return false;
+    }
+
+    // Use agent's evaluation method for acceptance
+    const acceptanceScore = target.evaluateAllianceProposal(requester.id, requester.stats);
+    const accepted = acceptanceScore > 60; // Need 60+ score to accept
 
     if (accepted) {
+      // Define alliance conditions
+      const conditions = payload.conditions || {
+        protection: requester.stats.cooperation > 70 || targetState.stats.cooperation > 70,
+        resourceSharing: requester.stats.cooperation > 60 || targetState.stats.cooperation > 60,
+        exclusivity: requester.stats.empathy > 70 && targetState.stats.empathy > 70,
+      };
+
+      // Form alliance through AllianceManager
+      const alliance = this.allianceManager.formAlliance(
+        requester,
+        targetState,
+        conditions,
+        payload.duration
+      );
+
+      // Update agent allegiances
       agent.formAlliance(targetId);
       target.formAlliance(requester.id);
 
-      effects.push(`Formed alliance with ${targetState.name}`);
+      effects.push(`Formed alliance with ${targetState.name} (Strength: ${alliance.strength})`);
 
       this.logger.logEvent({
         type: 'interaction',
-        description: `${requester.name} and ${targetState.name} formed an alliance`,
+        description: `${requester.name} and ${targetState.name} formed an alliance (Strength: ${alliance.strength})`,
         agentIds: [requester.id, targetId],
+        metadata: {
+          allianceId: alliance.id,
+          conditions: alliance.conditions,
+          strength: alliance.strength,
+        },
       });
     } else {
-      effects.push(`${targetState.name} rejected alliance`);
+      effects.push(`${targetState.name} rejected alliance (Acceptance score: ${acceptanceScore})`);
 
       const msg: Message = {
         id: uuidv4(),
@@ -817,6 +932,7 @@ export class SimulationEngine {
 
   /**
    * Handle break alliance action
+   * Uses AllianceManager to properly remove alliance
    */
   private handleBreakAlliance(agent: BaseAgent, targetId: string, effects: string[]): boolean {
     const breaker = agent.getState();
@@ -829,6 +945,20 @@ export class SimulationEngine {
 
     const targetState = target.getState();
 
+    // Get alliance info before breaking
+    const alliance = this.allianceManager
+      .getAlliances(breaker.id)
+      .find((a) => a.memberIds.includes(targetId));
+
+    // Break alliance through AllianceManager
+    const broken = this.allianceManager.breakAlliance(breaker.id, targetId);
+
+    if (!broken) {
+      effects.push(`No alliance exists with ${targetState.name}`);
+      return false;
+    }
+
+    // Update agent allegiances
     agent.breakAlliance(targetId);
     target.breakAlliance(breaker.id);
 
@@ -838,6 +968,10 @@ export class SimulationEngine {
       type: 'interaction',
       description: `${breaker.name} broke alliance with ${targetState.name}`,
       agentIds: [breaker.id, targetId],
+      metadata: {
+        allianceId: alliance?.id,
+        previousStrength: alliance?.strength,
+      },
     });
 
     return true;
@@ -925,6 +1059,59 @@ export class SimulationEngine {
         agent.heal(10);
         agent.updateStats({ energy: Math.min(100, state.stats.energy + 15) });
         break;
+    }
+  }
+
+  /**
+   * Update alliances (expiration, strengthening, cooperation tracking)
+   */
+  private updateAlliances(): void {
+    const { expired, strengthened } = this.allianceManager.updateTurn(this.currentTurn);
+
+    // Log expired alliances
+    for (const alliance of expired) {
+      const memberNames = alliance.memberIds
+        .map((id) => this.agents.get(id)?.getState().name)
+        .filter(Boolean)
+        .join(' and ');
+
+      this.logger.logEvent({
+        type: 'interaction',
+        description: `Alliance between ${memberNames} has expired after ${
+          this.currentTurn - alliance.formedAt
+        } turns`,
+        agentIds: alliance.memberIds,
+        metadata: { allianceId: alliance.id, finalStrength: alliance.strength },
+      });
+
+      // Remove from agents' allegiances
+      for (const memberId of alliance.memberIds) {
+        const agent = this.agents.get(memberId);
+        if (agent) {
+          for (const otherId of alliance.memberIds) {
+            if (otherId !== memberId) {
+              agent.breakAlliance(otherId);
+            }
+          }
+        }
+      }
+    }
+
+    // Log strengthened alliances (every 5th turn some alliances strengthen)
+    if (strengthened.length > 0 && this.currentTurn % 5 === 0) {
+      for (const alliance of strengthened) {
+        const memberNames = alliance.memberIds
+          .map((id) => this.agents.get(id)?.getState().name)
+          .filter(Boolean)
+          .join(' and ');
+
+        this.logger.logEvent({
+          type: 'interaction',
+          description: `Alliance between ${memberNames} grew stronger (Strength: ${alliance.strength})`,
+          agentIds: alliance.memberIds,
+          metadata: { allianceId: alliance.id, strength: alliance.strength },
+        });
+      }
     }
   }
 
@@ -1068,5 +1255,12 @@ export class SimulationEngine {
    */
   getNegotiationEngine(): NegotiationEngine {
     return this.negotiationEngine;
+  }
+
+  /**
+   * Get alliance manager (for alliance queries and social network analysis)
+   */
+  getAllianceManager(): AllianceManager {
+    return this.allianceManager;
   }
 }

@@ -218,3 +218,38 @@ export interface NegotiationOutcome {
   };
   consequences: string[];
 }
+
+/**
+ * Alliance System Types
+ */
+
+export interface Alliance {
+  id: string;
+  memberIds: string[]; // Agent IDs in the alliance
+  formedAt: number; // Timestamp
+  duration?: number; // Turns until expiry (undefined = permanent)
+  strength: number; // 0-100, based on cooperation and trust
+  conditions: {
+    protection: boolean; // Defend each other in combat
+    resourceSharing: boolean; // Share observations and resources
+    exclusivity: boolean; // Members cannot attack each other
+  };
+  metadata?: Record<string, any>;
+}
+
+export interface AllianceRequest {
+  id: string;
+  from: string;
+  to: string;
+  timestamp: number;
+  conditions: Alliance['conditions'];
+  duration?: number;
+}
+
+export interface AllianceStrength {
+  baseStrength: number; // From formation conditions
+  cooperationBonus: number; // From successful cooperation
+  trustBonus: number; // From honoring agreements
+  timeBonus: number; // Longer alliances are stronger
+  total: number; // Sum of all bonuses (0-100)
+}
