@@ -15,6 +15,7 @@ import { LLMAgent, ScriptedAgent } from './agents';
 import { getPreset, getAllPresetNames, createGoalsFromPersonality } from './simulations';
 import { getPersonality, ALL_PERSONALITIES } from './agents/personalities';
 import { Position } from './schemas/types';
+import { AnalyticsEngine } from './analytics';
 
 const app = express();
 const server = createServer(app);
@@ -547,6 +548,191 @@ app.post('/api/agents/add', (req, res) => {
     });
   } catch (error: any) {
     console.error('Error adding agent:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/heatmap/aggression
+ * Get aggression heatmap for the current simulation
+ */
+app.get('/api/analytics/heatmap/aggression', (req, res) => {
+  if (!engine || !world) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+    const dimensions = world.getDimensions();
+
+    const heatmap = analyticsEngine.generateAggressionHeatmap(
+      state.agents,
+      dimensions.width,
+      dimensions.height
+    );
+
+    res.json({ heatmap });
+  } catch (error: any) {
+    console.error('Error generating aggression heatmap:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/heatmap/cooperation
+ * Get cooperation heatmap for the current simulation
+ */
+app.get('/api/analytics/heatmap/cooperation', (req, res) => {
+  if (!engine || !world) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+    const dimensions = world.getDimensions();
+
+    const heatmap = analyticsEngine.generateCooperationHeatmap(
+      state.agents,
+      dimensions.width,
+      dimensions.height
+    );
+
+    res.json({ heatmap });
+  } catch (error: any) {
+    console.error('Error generating cooperation heatmap:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/relations/graph
+ * Get social graph data with nodes and edges
+ */
+app.get('/api/analytics/relations/graph', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+    const socialGraph = engine.getSocialGraph();
+    const allianceManager = engine.getAllianceManager();
+
+    const graphData = analyticsEngine.buildSocialGraphMatrix(
+      state.agents,
+      socialGraph,
+      allianceManager
+    );
+
+    res.json({ graph: graphData });
+  } catch (error: any) {
+    console.error('Error generating social graph:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/metrics
+ * Get comprehensive analytics metrics
+ */
+app.get('/api/analytics/metrics', (req, res) => {
+  if (!engine || !logger) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+
+    // Get comprehensive metrics
+    const metrics = analyticsEngine.computeMetrics(
+      state.agents,
+      state.actionResults,
+      state.turn
+    );
+
+    // Compute resource flow
+    const resourceFlow = analyticsEngine.computeResourceFlow(
+      state.messages,
+      state.actionResults
+    );
+
+    // Compute negotiation metrics
+    const negotiationMetrics = analyticsEngine.computeNegotiationSuccessRates(
+      state.messages,
+      state.actionResults
+    );
+
+    // Compute survival statistics (with empty death records for now)
+    const survivalStats = analyticsEngine.computeSurvivalRates(
+      state.agents,
+      state.turn,
+      []
+    );
+
+    res.json({
+      metrics,
+      resourceFlow,
+      negotiationMetrics,
+      survivalStats,
+    });
+  } catch (error: any) {
+    console.error('Error computing analytics metrics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/resource-flow
+ * Get resource flow data
+ */
+app.get('/api/analytics/resource-flow', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+
+    const resourceFlow = analyticsEngine.computeResourceFlow(
+      state.messages,
+      state.actionResults
+    );
+
+    res.json({ resourceFlow });
+  } catch (error: any) {
+    console.error('Error computing resource flow:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/survival
+ * Get survival statistics
+ */
+app.get('/api/analytics/survival', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+
+    // TODO: Track actual death records in the simulation
+    const survivalStats = analyticsEngine.computeSurvivalRates(
+      state.agents,
+      state.turn,
+      []
+    );
+
+    res.json({ survivalStats });
+  } catch (error: any) {
+    console.error('Error computing survival statistics:', error);
     res.status(500).json({ error: error.message });
   }
 });

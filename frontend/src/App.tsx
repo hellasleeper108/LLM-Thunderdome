@@ -3,7 +3,7 @@
  * Orchestrates the entire frontend application
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { createWebSocket } from './api';
 import { ArenaView } from './components/ArenaView';
@@ -11,9 +11,13 @@ import { AgentInspector } from './components/AgentInspector';
 import { EventLog } from './components/EventLog';
 import { SimulationControls } from './components/SimulationControls';
 import { ReplayViewer } from './components/ReplayViewer';
+import { AnalyticsDashboard } from './components/AnalyticsDashboard';
+
+type ViewMode = 'simulation' | 'analytics';
 
 function App() {
   const { setSimulation, setWorld, setLogs, addLog, setWebSocket, setConnected } = useStore();
+  const [viewMode, setViewMode] = useState<ViewMode>('simulation');
 
   useEffect(() => {
     // Initialize WebSocket connection
@@ -84,7 +88,7 @@ function App() {
     <div className="min-h-screen bg-slate-900 text-white">
       {/* Header */}
       <header className="bg-slate-950 border-b-2 border-slate-800 px-6 py-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between mb-3">
           <div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
               🎮 LLM Thunderdome
@@ -102,34 +106,66 @@ function App() {
             </div>
           </div>
         </div>
+
+        {/* View Mode Tabs */}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setViewMode('simulation')}
+            className={`px-4 py-2 rounded ${
+              viewMode === 'simulation'
+                ? 'bg-blue-600 text-white'
+                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+            }`}
+          >
+            Simulation
+          </button>
+          <button
+            onClick={() => setViewMode('analytics')}
+            className={`px-4 py-2 rounded ${
+              viewMode === 'analytics'
+                ? 'bg-blue-600 text-white'
+                : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+            }`}
+          >
+            Analytics
+          </button>
+        </div>
       </header>
 
       {/* Main Content */}
-      <main className="h-[calc(100vh-88px)] p-4">
-        {/* Replay Viewer (appears when in replay mode) */}
-        <ReplayViewer />
+      <main className="h-[calc(100vh-144px)] p-4">
+        {viewMode === 'simulation' ? (
+          <>
+            {/* Replay Viewer (appears when in replay mode) */}
+            <ReplayViewer />
 
-        <div className="grid grid-cols-12 gap-4 h-full">
-          {/* Left Column: Controls */}
-          <div className="col-span-3 h-full">
-            <SimulationControls />
-          </div>
+            <div className="grid grid-cols-12 gap-4 h-full">
+              {/* Left Column: Controls */}
+              <div className="col-span-3 h-full">
+                <SimulationControls />
+              </div>
 
-          {/* Middle Column: Arena */}
-          <div className="col-span-6 h-full">
-            <ArenaView />
-          </div>
+              {/* Middle Column: Arena */}
+              <div className="col-span-6 h-full">
+                <ArenaView />
+              </div>
 
-          {/* Right Column: Agent Inspector & Event Log */}
-          <div className="col-span-3 h-full flex flex-col gap-4">
-            <div className="flex-1 min-h-0">
-              <AgentInspector />
+              {/* Right Column: Agent Inspector & Event Log */}
+              <div className="col-span-3 h-full flex flex-col gap-4">
+                <div className="flex-1 min-h-0">
+                  <AgentInspector />
+                </div>
+                <div className="flex-1 min-h-0">
+                  <EventLog />
+                </div>
+              </div>
             </div>
-            <div className="flex-1 min-h-0">
-              <EventLog />
-            </div>
+          </>
+        ) : (
+          <div className="h-full">
+            <AnalyticsDashboard />
           </div>
-        </div>
+        )}
       </main>
     </div>
   );
