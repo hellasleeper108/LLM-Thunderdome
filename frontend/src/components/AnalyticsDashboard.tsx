@@ -3,7 +3,7 @@
  * Displays heatmaps, metrics, and social graph visualizations
  */
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 
 // Analytics data types
@@ -48,15 +48,6 @@ interface AnalyticsMetrics {
     resourcesGathered: number;
     averageMovement: number;
   };
-}
-
-interface ResourceFlowEdge {
-  from: string;
-  to: string;
-  food: number;
-  water: number;
-  material: number;
-  total: number;
 }
 
 interface SocialGraphNode {

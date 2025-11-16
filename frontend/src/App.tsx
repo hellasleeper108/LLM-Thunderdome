@@ -3,10 +3,11 @@
  * Orchestrates the entire frontend application
  */
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { createWebSocket } from './api';
 import { ArenaView } from './components/ArenaView';
+import { WebGLArena } from './components/WebGLArena';
 import { AgentInspector } from './components/AgentInspector';
 import { EventLog } from './components/EventLog';
 import { SimulationControls } from './components/SimulationControls';
@@ -14,10 +15,12 @@ import { ReplayViewer } from './components/ReplayViewer';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
 
 type ViewMode = 'simulation' | 'analytics';
+type RenderMode = '2d' | '3d';
 
 function App() {
   const { setSimulation, setWorld, setLogs, addLog, setWebSocket, setConnected } = useStore();
   const [viewMode, setViewMode] = useState<ViewMode>('simulation');
+  const [renderMode, setRenderMode] = useState<RenderMode>('2d');
 
   useEffect(() => {
     // Initialize WebSocket connection
@@ -146,8 +149,36 @@ function App() {
               </div>
 
               {/* Middle Column: Arena */}
-              <div className="col-span-6 h-full">
-                <ArenaView />
+              <div className="col-span-6 h-full flex flex-col gap-2">
+                {/* 2D/3D Toggle */}
+                <div className="flex items-center gap-2 bg-slate-800 rounded p-2">
+                  <span className="text-sm text-slate-400">View:</span>
+                  <button
+                    onClick={() => setRenderMode('2d')}
+                    className={`px-3 py-1 rounded text-sm transition-colors ${
+                      renderMode === '2d'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                    }`}
+                  >
+                    2D Grid
+                  </button>
+                  <button
+                    onClick={() => setRenderMode('3d')}
+                    className={`px-3 py-1 rounded text-sm transition-colors ${
+                      renderMode === '3d'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                    }`}
+                  >
+                    3D World
+                  </button>
+                </div>
+
+                {/* Arena View */}
+                <div className="flex-1 min-h-0">
+                  {renderMode === '2d' ? <ArenaView /> : <WebGLArena />}
+                </div>
               </div>
 
               {/* Right Column: Agent Inspector & Event Log */}
