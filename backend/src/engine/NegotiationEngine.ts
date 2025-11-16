@@ -14,14 +14,17 @@ import {
   AgentState,
   Inventory,
 } from '../schemas/types';
+import { SocialGraph } from '../agents/SocialGraph';
 
 export class NegotiationEngine {
   private negotiationHistory: Map<string, NegotiationOffer[]>;
-  private relationshipScores: Map<string, number>; // key: "agentA:agentB"
+  private relationshipScores: Map<string, number>; // key: "agentA:agentB" (legacy, still used for compatibility)
+  private socialGraph: SocialGraph;
 
-  constructor() {
+  constructor(socialGraph?: SocialGraph) {
     this.negotiationHistory = new Map();
     this.relationshipScores = new Map();
+    this.socialGraph = socialGraph || new SocialGraph();
   }
 
   /**
@@ -200,12 +203,22 @@ export class NegotiationEngine {
     if (!response.accepted) {
       // Update relationship score negatively
       this.updateRelationship(initiator.id, target.id, -5);
+
+      // Update social graph for rejection
+      this.socialGraph.adjustTrust(initiator.id, target.id, -5);
+      this.socialGraph.adjustRespect(initiator.id, target.id, -3);
+
       outcome.consequences.push(`${target.name} rejected ${initiator.name}'s offer`);
 
       // Check for threat consequences
       if (offer.protocol === NegotiationProtocol.THREAT) {
         outcome.consequences.push('Threat rejected - potential for future conflict');
         this.updateRelationship(initiator.id, target.id, -10);
+
+        // Rejecting a threat increases rivalry and reduces fear
+        this.socialGraph.adjustRivalry(target.id, initiator.id, 15);
+        this.socialGraph.adjustFear(target.id, initiator.id, -5);
+        this.socialGraph.adjustRespect(initiator.id, target.id, 10); // Respects bravery
       }
 
       return outcome;
@@ -230,6 +243,12 @@ export class NegotiationEngine {
           `Trade completed: ${this.describeResources(offer.offering)} ↔ ${this.describeResources(offer.requesting)}`
         );
         this.updateRelationship(initiator.id, target.id, 10);
+
+        // Update social graph for successful trade (mutual)
+        this.socialGraph.adjustTrust(initiator.id, target.id, 8);
+        this.socialGraph.adjustTrust(target.id, initiator.id, 8);
+        this.socialGraph.adjustRespect(initiator.id, target.id, 3);
+        this.socialGraph.adjustRespect(target.id, initiator.id, 3);
         break;
 
       case NegotiationProtocol.ALLIANCE:
@@ -240,6 +259,14 @@ export class NegotiationEngine {
           }`
         );
         this.updateRelationship(initiator.id, target.id, 25);
+
+        // Update social graph for alliance formation (strong mutual bond)
+        this.socialGraph.adjustTrust(initiator.id, target.id, 15);
+        this.socialGraph.adjustTrust(target.id, initiator.id, 15);
+        this.socialGraph.adjustLoyalty(initiator.id, target.id, 20);
+        this.socialGraph.adjustLoyalty(target.id, initiator.id, 20);
+        this.socialGraph.adjustRespect(initiator.id, target.id, 10);
+        this.socialGraph.adjustRespect(target.id, initiator.id, 10);
         break;
 
       case NegotiationProtocol.THREAT:
@@ -261,6 +288,14 @@ export class NegotiationEngine {
           outcome.consequences.push(`${target.name} backed down from ${initiator.name}'s threat`);
         }
         this.updateRelationship(initiator.id, target.id, -15);
+
+        // Update social graph for threat (creates fear and rivalry)
+        this.socialGraph.adjustFear(target.id, initiator.id, 20);
+        this.socialGraph.adjustRivalry(target.id, initiator.id, 10);
+        this.socialGraph.adjustTrust(target.id, initiator.id, -15);
+        this.socialGraph.adjustLoyalty(target.id, initiator.id, -20);
+        // Initiator may gain respect for being powerful, but loses trust
+        this.socialGraph.adjustRespect(target.id, initiator.id, 5);
         break;
 
       case NegotiationProtocol.REQUEST_AID:
@@ -276,6 +311,13 @@ export class NegotiationEngine {
           `${target.name} provided aid to ${initiator.name}: ${this.describeResources(offer.requesting)}`
         );
         this.updateRelationship(initiator.id, target.id, 15);
+
+        // Update social graph for aid (creates trust and loyalty)
+        this.socialGraph.adjustTrust(initiator.id, target.id, 12);
+        this.socialGraph.adjustLoyalty(initiator.id, target.id, 15);
+        this.socialGraph.adjustRespect(initiator.id, target.id, 8);
+        // Target feels good about helping
+        this.socialGraph.adjustRespect(target.id, initiator.id, 3);
         break;
     }
 
@@ -501,5 +543,13 @@ export class NegotiationEngine {
   reset(): void {
     this.negotiationHistory.clear();
     this.relationshipScores.clear();
+    this.socialGraph.reset();
+  }
+
+  /**
+   * Get the social graph for external access
+   */
+  getSocialGraph(): SocialGraph {
+    return this.socialGraph;
   }
 }

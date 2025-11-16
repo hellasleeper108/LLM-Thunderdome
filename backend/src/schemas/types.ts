@@ -253,3 +253,23 @@ export interface AllianceStrength {
   timeBonus: number; // Longer alliances are stronger
   total: number; // Sum of all bonuses (0-100)
 }
+
+/**
+ * Social Graph Types
+ */
+
+export interface RelationshipWeights {
+  trust: number; // 0-100: confidence in another agent's reliability
+  fear: number; // 0-100: how much one agent fears another
+  respect: number; // 0-100: admiration or regard for another agent
+  rivalry: number; // 0-100: competitive tension or antagonism
+  loyalty: number; // 0-100: commitment and dedication to another agent
+}
+
+export interface SocialRelationship {
+  from: string;
+  to: string;
+  weights: RelationshipWeights;
+  lastUpdated: number;
+  interactionCount: number;
+}

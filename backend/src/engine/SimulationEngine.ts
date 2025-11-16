@@ -5,6 +5,7 @@
 
 import { BaseAgent } from '../agents/BaseAgent';
 import { AllianceManager } from '../agents/AllianceManager';
+import { SocialGraph } from '../agents/SocialGraph';
 import { World } from '../world/World';
 import { EventLogger } from '../logging/EventLogger';
 import { NegotiationEngine } from './NegotiationEngine';
@@ -37,6 +38,7 @@ export class SimulationEngine {
   private world: World;
   private agents: Map<string, BaseAgent>;
   private logger: EventLogger;
+  private socialGraph: SocialGraph;
   private negotiationEngine: NegotiationEngine;
   private allianceManager: AllianceManager;
   private config: Required<EngineConfig>;
@@ -50,8 +52,13 @@ export class SimulationEngine {
     this.world = world;
     this.agents = new Map();
     this.logger = logger;
-    this.negotiationEngine = new NegotiationEngine();
-    this.allianceManager = new AllianceManager();
+
+    // Create shared SocialGraph instance for negotiation and alliance systems
+    this.socialGraph = new SocialGraph(0.5); // 0.5 decay rate per turn
+
+    this.negotiationEngine = new NegotiationEngine(this.socialGraph);
+    this.allianceManager = new AllianceManager(this.socialGraph);
+
     this.config = {
       turnDuration: config.turnDuration,
       maxTurns: config.maxTurns,
@@ -1064,9 +1071,13 @@ export class SimulationEngine {
 
   /**
    * Update alliances (expiration, strengthening, cooperation tracking)
+   * Also decay social relationships over time
    */
   private updateAlliances(): void {
     const { expired, strengthened } = this.allianceManager.updateTurn(this.currentTurn);
+
+    // Decay all social relationships
+    this.socialGraph.decayAllRelationships();
 
     // Log expired alliances
     for (const alliance of expired) {
@@ -1262,5 +1273,12 @@ export class SimulationEngine {
    */
   getAllianceManager(): AllianceManager {
     return this.allianceManager;
+  }
+
+  /**
+   * Get social graph (for relationship queries and social network analysis)
+   */
+  getSocialGraph(): SocialGraph {
+    return this.socialGraph;
   }
 }

@@ -400,6 +400,60 @@ app.post('/api/logs/export', (req, res) => {
 });
 
 /**
+ * GET /api/relations
+ * Get social relationship data
+ * Query params: agentId (optional), type (optional: trust, fear, respect, rivalry, loyalty)
+ */
+app.get('/api/relations', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const { agentId, type } = req.query;
+    const socialGraph = engine.getSocialGraph();
+
+    // If specific agent requested
+    if (agentId) {
+      const summary = socialGraph.getSocialSummary(agentId as string);
+
+      // If specific relationship type requested, filter results
+      if (type) {
+        const strongest = socialGraph.getStrongestRelationships(
+          agentId as string,
+          type as any,
+          10
+        );
+
+        return res.json({
+          agentId,
+          type,
+          relationships: strongest,
+          summary,
+        });
+      }
+
+      // Return full summary
+      return res.json({
+        agentId,
+        summary,
+      });
+    }
+
+    // Return all relationships
+    const allRelationships = socialGraph.getAllRelationshipData();
+
+    res.json({
+      relationships: allRelationships,
+      totalCount: allRelationships.length,
+    });
+  } catch (error: any) {
+    console.error('Error fetching relations:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/agents/add
  * Add a new agent to the simulation
  */

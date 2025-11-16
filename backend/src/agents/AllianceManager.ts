@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { Alliance, AllianceStrength, AllianceRequest, AgentState } from '../schemas/types';
+import { SocialGraph } from './SocialGraph';
 
 export class AllianceManager {
   private alliances: Map<string, Alliance>; // allianceId -> Alliance
@@ -12,13 +13,15 @@ export class AllianceManager {
   private allianceRequests: Map<string, AllianceRequest>; // requestId -> Request
   private cooperationHistory: Map<string, number[]>; // allianceId -> cooperation scores
   private currentTurn: number;
+  private socialGraph: SocialGraph;
 
-  constructor() {
+  constructor(socialGraph?: SocialGraph) {
     this.alliances = new Map();
     this.agentAlliances = new Map();
     this.allianceRequests = new Map();
     this.cooperationHistory = new Map();
     this.currentTurn = 0;
+    this.socialGraph = socialGraph || new SocialGraph();
   }
 
   /**
@@ -40,20 +43,26 @@ export class AllianceManager {
       return existingAlliance;
     }
 
-    // Calculate initial strength based on agent compatibility
+    // Calculate initial strength based on agent compatibility and social relationships
     const baseStrength = this.calculateInitialStrength(agentA, agentB, conditions);
+
+    // Get social relationship bonus
+    const socialBonus = this.getSocialRelationshipBonus(agentA.id, agentB.id);
+
+    const finalStrength = Math.max(0, Math.min(100, baseStrength + socialBonus));
 
     const alliance: Alliance = {
       id: uuidv4(),
       memberIds: [agentA.id, agentB.id],
       formedAt: this.currentTurn,
       duration,
-      strength: baseStrength,
+      strength: finalStrength,
       conditions,
       metadata: {
         formationReason: 'negotiation',
         agentACooperation: agentA.stats.cooperation,
         agentBCooperation: agentB.stats.cooperation,
+        socialBonus,
       },
     };
 
@@ -72,7 +81,13 @@ export class AllianceManager {
     this.agentAlliances.get(agentB.id)!.add(alliance.id);
 
     // Initialize cooperation history
-    this.cooperationHistory.set(alliance.id, [baseStrength]);
+    this.cooperationHistory.set(alliance.id, [finalStrength]);
+
+    // Update social graph for alliance formation
+    this.socialGraph.adjustLoyalty(agentA.id, agentB.id, 15);
+    this.socialGraph.adjustLoyalty(agentB.id, agentA.id, 15);
+    this.socialGraph.adjustTrust(agentA.id, agentB.id, 10);
+    this.socialGraph.adjustTrust(agentB.id, agentA.id, 10);
 
     return alliance;
   }
@@ -94,6 +109,14 @@ export class AllianceManager {
     // Remove alliance
     this.alliances.delete(alliance.id);
     this.cooperationHistory.delete(alliance.id);
+
+    // Update social graph for alliance breaking
+    this.socialGraph.adjustLoyalty(agentA, agentB, -20);
+    this.socialGraph.adjustLoyalty(agentB, agentA, -20);
+    this.socialGraph.adjustTrust(agentA, agentB, -10);
+    this.socialGraph.adjustTrust(agentB, agentA, -10);
+    this.socialGraph.adjustRivalry(agentA, agentB, 5);
+    this.socialGraph.adjustRivalry(agentB, agentA, 5);
 
     return true;
   }
@@ -194,6 +217,12 @@ export class AllianceManager {
 
     // Reduce alliance strength
     alliance.strength = Math.max(0, alliance.strength - severity);
+
+    // Update social graph for betrayal
+    this.socialGraph.adjustTrust(agentB, agentA, -severity * 0.8);
+    this.socialGraph.adjustLoyalty(agentB, agentA, -severity * 1.0);
+    this.socialGraph.adjustRivalry(agentB, agentA, severity * 0.6);
+    this.socialGraph.adjustRespect(agentB, agentA, -severity * 0.4);
 
     // Break alliance if strength drops to 0
     if (alliance.strength <= 0) {
@@ -352,6 +381,50 @@ export class AllianceManager {
       timeBonus,
       total,
     };
+  }
+
+  /**
+   * Get social relationship bonus for alliance strength
+   */
+  private getSocialRelationshipBonus(agentA: string, agentB: string): number {
+    const relationshipA = this.socialGraph.getRelationship(agentA, agentB);
+    const relationshipB = this.socialGraph.getRelationship(agentB, agentA);
+
+    if (!relationshipA && !relationshipB) {
+      return 0;
+    }
+
+    // Calculate mutual trust and loyalty bonus
+    const trustA = relationshipA?.trust || 0;
+    const trustB = relationshipB?.trust || 0;
+    const loyaltyA = relationshipA?.loyalty || 0;
+    const loyaltyB = relationshipB?.loyalty || 0;
+
+    const avgTrust = (trustA + trustB) / 2;
+    const avgLoyalty = (loyaltyA + loyaltyB) / 2;
+
+    // Trust and loyalty increase base strength
+    const bonus = (avgTrust * 0.15 + avgLoyalty * 0.15);
+
+    // Fear and rivalry reduce it
+    const fearA = relationshipA?.fear || 0;
+    const fearB = relationshipB?.fear || 0;
+    const rivalryA = relationshipA?.rivalry || 0;
+    const rivalryB = relationshipB?.rivalry || 0;
+
+    const avgFear = (fearA + fearB) / 2;
+    const avgRivalry = (rivalryA + rivalryB) / 2;
+
+    const penalty = (avgFear * 0.1 + avgRivalry * 0.2);
+
+    return bonus - penalty;
+  }
+
+  /**
+   * Get the social graph for external access
+   */
+  getSocialGraph(): SocialGraph {
+    return this.socialGraph;
   }
 
   /**
