@@ -149,3 +149,72 @@ export interface Observation {
   currentStats: AgentStats;
   inventory: Inventory;
 }
+
+/**
+ * Negotiation System Types
+ */
+
+export enum NegotiationProtocol {
+  TRADE = 'trade',
+  ALLIANCE = 'alliance',
+  THREAT = 'threat',
+  REQUEST_AID = 'request_aid',
+}
+
+export interface ResourceOffer {
+  food?: number;
+  water?: number;
+  material?: number;
+}
+
+export interface NegotiationOffer {
+  id: string;
+  protocol: NegotiationProtocol;
+  initiatorId: string;
+  targetId: string;
+  offering: ResourceOffer;
+  requesting: ResourceOffer;
+  terms?: string; // Human-readable terms
+  conditions?: {
+    duration?: number; // For alliances, how many turns
+    exclusivity?: boolean; // For alliances
+    protection?: boolean; // Defender helps in combat
+    immediate?: boolean; // Must be fulfilled this turn
+  };
+  timestamp: number;
+}
+
+export interface NegotiationResponse {
+  offerId: string;
+  accepted: boolean;
+  counterOffer?: NegotiationOffer;
+  reason?: string;
+  timestamp: number;
+}
+
+export interface NegotiationContext {
+  initiator: AgentState;
+  target: AgentState;
+  turn: number;
+  recentHistory: NegotiationOffer[]; // Previous offers between these agents
+  relationshipScore: number; // -100 to 100, based on past interactions
+  powerBalance: number; // -1 to 1, negative means target is stronger
+}
+
+export interface NegotiationOutcome {
+  success: boolean;
+  offer: NegotiationOffer;
+  response: NegotiationResponse;
+  effects: {
+    resourceTransfers?: {
+      from: string;
+      to: string;
+      resources: ResourceOffer;
+    }[];
+    allianceFormed?: boolean;
+    allianceBroken?: boolean;
+    threatIssued?: boolean;
+    aidProvided?: boolean;
+  };
+  consequences: string[];
+}

@@ -6,6 +6,7 @@
 import { BaseAgent } from '../agents/BaseAgent';
 import { World } from '../world/World';
 import { EventLogger } from '../logging/EventLogger';
+import { NegotiationEngine } from './NegotiationEngine';
 import {
   Action,
   ActionType,
@@ -15,6 +16,9 @@ import {
   Message,
   TileType,
   AgentState,
+  NegotiationOffer,
+  NegotiationProtocol,
+  ResourceOffer,
 } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -31,6 +35,7 @@ export class SimulationEngine {
   private world: World;
   private agents: Map<string, BaseAgent>;
   private logger: EventLogger;
+  private negotiationEngine: NegotiationEngine;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -42,6 +47,7 @@ export class SimulationEngine {
     this.world = world;
     this.agents = new Map();
     this.logger = logger;
+    this.negotiationEngine = new NegotiationEngine();
     this.config = {
       turnDuration: config.turnDuration,
       maxTurns: config.maxTurns,
@@ -155,6 +161,7 @@ export class SimulationEngine {
     this.messages = [];
     this.actionResults = [];
     this.world.reset();
+    this.negotiationEngine.reset();
     this.status = 'idle';
 
     // Reset all agents
@@ -566,6 +573,7 @@ export class SimulationEngine {
 
   /**
    * Handle negotiate action
+   * Uses the NegotiationEngine for sophisticated offer evaluation and outcome computation
    */
   private handleNegotiate(agent: BaseAgent, targetId: string, payload: any, effects: string[]): boolean {
     const negotiator = agent.getState();
@@ -578,28 +586,185 @@ export class SimulationEngine {
 
     const targetState = target.getState();
 
-    const msg: Message = {
+    // Create negotiation offer from payload
+    const offer: NegotiationOffer = {
       id: uuidv4(),
-      from: negotiator.id,
-      to: targetId,
-      content: payload.message || 'Let us negotiate.',
-      type: 'bargain',
+      protocol: payload.protocol || NegotiationProtocol.TRADE,
+      initiatorId: negotiator.id,
+      targetId: targetState.id,
+      offering: payload.offering || {},
+      requesting: payload.requesting || {},
+      terms: payload.terms || payload.message || 'Let us negotiate.',
+      conditions: payload.conditions,
       timestamp: Date.now(),
     };
 
-    this.messages.push(msg);
-    target.receiveMessage(msg);
+    // Build negotiation context
+    const context = this.negotiationEngine.buildContext(
+      negotiator,
+      targetState,
+      this.currentTurn
+    );
 
-    effects.push(`Negotiating with ${targetState.name}`);
+    // Evaluate the offer
+    const evaluation = this.negotiationEngine.evaluateOffer(offer, context);
 
+    // Create response
+    const response = {
+      offerId: offer.id,
+      accepted: evaluation.shouldAccept,
+      reason: evaluation.reason,
+      timestamp: Date.now(),
+    };
+
+    // Generate counter-offer if rejected and conditions allow
+    if (!evaluation.shouldAccept && evaluation.confidence < 0.8) {
+      const counterOffer = this.negotiationEngine.generateCounterOffer(
+        negotiator,
+        targetState,
+        offer,
+        context
+      );
+      if (counterOffer) {
+        response.counterOffer = counterOffer;
+      }
+    }
+
+    // Compute outcome
+    const outcome = this.negotiationEngine.computeOutcome(
+      negotiator,
+      targetState,
+      offer,
+      response
+    );
+
+    // Apply effects based on outcome
+    if (outcome.success) {
+      this.applyNegotiationOutcome(outcome, agent, target, effects);
+    } else {
+      effects.push(`Negotiation rejected: ${response.reason}`);
+
+      // Log counter-offer if present
+      if (response.counterOffer) {
+        effects.push(`Counter-offer proposed by ${targetState.name}`);
+
+        // Send counter-offer message
+        const counterMsg: Message = {
+          id: uuidv4(),
+          from: targetState.id,
+          to: negotiator.id,
+          content: `Counter-offer: ${response.counterOffer.terms}`,
+          type: 'bargain',
+          timestamp: Date.now(),
+        };
+        this.messages.push(counterMsg);
+        agent.receiveMessage(counterMsg);
+      }
+    }
+
+    // Log negotiation event
     this.logger.logEvent({
-      type: 'dialogue',
-      description: `${negotiator.name} negotiates with ${targetState.name}: "${msg.content}"`,
+      type: 'interaction',
+      description: `${negotiator.name} ${outcome.success ? 'successfully ' : ''}negotiated with ${
+        targetState.name
+      } [${offer.protocol}]`,
       agentIds: [negotiator.id, targetId],
-      metadata: { offer: payload.offer },
+      metadata: {
+        protocol: offer.protocol,
+        offer: offer,
+        response: response,
+        outcome: outcome,
+        relationshipScore: context.relationshipScore,
+      },
     });
 
-    return true;
+    // Log consequences
+    outcome.consequences.forEach((consequence) => {
+      this.logger.logEvent({
+        type: 'interaction',
+        description: consequence,
+        agentIds: [negotiator.id, targetId],
+      });
+    });
+
+    return outcome.success;
+  }
+
+  /**
+   * Apply the effects of a successful negotiation
+   */
+  private applyNegotiationOutcome(
+    outcome: any,
+    initiator: BaseAgent,
+    target: BaseAgent,
+    effects: string[]
+  ): void {
+    const initiatorState = initiator.getState();
+    const targetState = target.getState();
+
+    // Handle resource transfers
+    if (outcome.effects.resourceTransfers) {
+      for (const transfer of outcome.effects.resourceTransfers) {
+        const fromAgent = this.agents.get(transfer.from);
+        const toAgent = this.agents.get(transfer.to);
+
+        if (fromAgent && toAgent) {
+          const fromState = fromAgent.getState();
+          const toState = toAgent.getState();
+
+          // Deduct from sender
+          if (transfer.resources.food) {
+            fromAgent.updateInventory({ food: fromState.inventory.food - transfer.resources.food });
+          }
+          if (transfer.resources.water) {
+            fromAgent.updateInventory({ water: fromState.inventory.water - transfer.resources.water });
+          }
+          if (transfer.resources.material) {
+            fromAgent.updateInventory({
+              material: fromState.inventory.material - transfer.resources.material,
+            });
+          }
+
+          // Add to receiver
+          if (transfer.resources.food) {
+            toAgent.updateInventory({ food: toState.inventory.food + transfer.resources.food });
+          }
+          if (transfer.resources.water) {
+            toAgent.updateInventory({ water: toState.inventory.water + transfer.resources.water });
+          }
+          if (transfer.resources.material) {
+            toAgent.updateInventory({ material: toState.inventory.material + transfer.resources.material });
+          }
+
+          const fromAgentState = fromAgent.getState();
+          const toAgentState = toAgent.getState();
+
+          this.logger.logEvent({
+            type: 'resource_change',
+            description: `Resources transferred from ${fromAgentState.name} to ${toAgentState.name}`,
+            agentIds: [transfer.from, transfer.to],
+            metadata: { resources: transfer.resources },
+          });
+        }
+      }
+    }
+
+    // Handle alliance formation
+    if (outcome.effects.allianceFormed) {
+      initiator.formAlliance(targetState.id);
+      target.formAlliance(initiatorState.id);
+      effects.push(`Alliance formed with ${targetState.name}`);
+    }
+
+    // Handle alliance breaking
+    if (outcome.effects.allianceBroken) {
+      initiator.breakAlliance(targetState.id);
+      target.breakAlliance(initiatorState.id);
+      effects.push(`Alliance broken with ${targetState.name}`);
+    }
+
+    // Add all consequences as effects
+    effects.push(...outcome.consequences);
   }
 
   /**
@@ -896,5 +1061,12 @@ export class SimulationEngine {
    */
   getStatus(): SimulationStatus {
     return this.status;
+  }
+
+  /**
+   * Get negotiation engine (for SocialGraph integration and advanced queries)
+   */
+  getNegotiationEngine(): NegotiationEngine {
+    return this.negotiationEngine;
   }
 }
