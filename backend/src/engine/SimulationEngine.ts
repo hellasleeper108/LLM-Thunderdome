@@ -11,6 +11,7 @@ import { World } from '../world/World';
 import { EventLogger } from '../logging/EventLogger';
 import { NegotiationEngine } from './NegotiationEngine';
 import { PlanningEngine } from '../agents/planning/PlanningEngine';
+import { WorldEventsManager } from '../world/events/WorldEvents';
 import {
   Action,
   ActionType,
@@ -25,6 +26,8 @@ import {
   ResourceOffer,
   Alliance,
   PlanStatus,
+  WorldEvent,
+  AgentStats,
 } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -33,6 +36,8 @@ export interface EngineConfig {
   maxTurns: number;
   autoAdvance?: boolean; // Auto-advance turns
   visionRadius?: number; // How far agents can see
+  eventFrequency?: number; // How often events spawn (0-1)
+  eventSpawnInterval?: number; // Try to spawn event every N turns
 }
 
 export type SimulationStatus = 'idle' | 'running' | 'paused' | 'completed';
@@ -46,6 +51,7 @@ export class SimulationEngine {
   private allianceManager: AllianceManager;
   private traitDrift: TraitDrift;
   private planningEngine: PlanningEngine;
+  private worldEventsManager: WorldEventsManager;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -66,11 +72,22 @@ export class SimulationEngine {
     this.traitDrift = new TraitDrift(this.socialGraph, 1.0); // 1.0 = normal drift rate
     this.planningEngine = new PlanningEngine();
 
+    // Initialize world events manager
+    // Note: We'll get world dimensions from the world object later
+    // For now, use reasonable defaults
+    this.worldEventsManager = new WorldEventsManager(20, 20, {
+      eventFrequency: config.eventFrequency ?? 0.15,
+      maxActiveEvents: 3,
+      allowCatastrophicEvents: true,
+    });
+
     this.config = {
       turnDuration: config.turnDuration,
       maxTurns: config.maxTurns,
       autoAdvance: config.autoAdvance ?? false,
       visionRadius: config.visionRadius ?? 3,
+      eventFrequency: config.eventFrequency ?? 0.15,
+      eventSpawnInterval: config.eventSpawnInterval ?? 5,
     };
     this.currentTurn = 0;
     this.status = 'idle';
@@ -182,6 +199,7 @@ export class SimulationEngine {
     this.negotiationEngine.reset();
     this.allianceManager.reset();
     this.traitDrift.reset();
+    this.worldEventsManager.reset();
     this.status = 'idle';
 
     // Reset all agents
@@ -222,16 +240,22 @@ export class SimulationEngine {
     // Phase 3: Resolve all actions
     await this.resolveActions(actions);
 
-    // Phase 4: Update world state
+    // Phase 4: Spawn and update world events
+    this.updateWorldEvents();
+
+    // Phase 5: Apply event effects to agents
+    this.applyEventEffects();
+
+    // Phase 6: Update world state
     this.updateWorldState();
 
-    // Phase 5: Process events
+    // Phase 7: Process events
     this.processEvents();
 
-    // Phase 6: Update alliances
+    // Phase 8: Update alliances
     this.updateAlliances();
 
-    // Phase 7: Apply trait drift
+    // Phase 9: Apply trait drift
     this.applyTraitDrift();
 
     this.logger.logEvent({
@@ -1276,6 +1300,164 @@ export class SimulationEngine {
           metadata: { position: eventPos },
         });
       }
+    }
+  }
+
+  /**
+   * Update world events (spawn new events, expire old ones)
+   */
+  private updateWorldEvents(): void {
+    // Update active events (expire old ones)
+    this.worldEventsManager.updateEvents(this.currentTurn);
+
+    // Try to spawn new event every N turns
+    if (this.currentTurn % this.config.eventSpawnInterval === 0) {
+      const newEvent = this.worldEventsManager.trySpawnEvent(this.currentTurn);
+
+      if (newEvent) {
+        // Log event creation
+        this.logger.logEvent({
+          type: 'event',
+          description: `${newEvent.severity.toUpperCase()} ${newEvent.type.replace('_', ' ').toUpperCase()} spawned at (${newEvent.epicenter.x}, ${newEvent.epicenter.y}) with radius ${newEvent.radius}`,
+          agentIds: [],
+          metadata: {
+            eventId: newEvent.id,
+            eventType: newEvent.type,
+            severity: newEvent.severity,
+            epicenter: newEvent.epicenter,
+            radius: newEvent.radius,
+            duration: newEvent.duration,
+            expiresAtTurn: newEvent.expiresAtTurn,
+            effects: newEvent.effects,
+          },
+        });
+      }
+    }
+  }
+
+  /**
+   * Apply effects from active world events to agents
+   */
+  private applyEventEffects(): void {
+    const activeEvents = this.worldEventsManager.getActiveEvents();
+
+    if (activeEvents.length === 0) {
+      return;
+    }
+
+    // Track which agents are affected by which events
+    const affectedAgents = new Map<string, WorldEvent[]>();
+
+    // Check each agent's position against active events
+    for (const [agentId, agent] of this.agents.entries()) {
+      const state = agent.getState();
+      if (!state.isAlive) continue;
+
+      const eventsAffectingAgent = this.worldEventsManager.getEventsAffectingPosition(state.position);
+
+      if (eventsAffectingAgent.length > 0) {
+        affectedAgents.set(agentId, eventsAffectingAgent);
+
+        for (const event of eventsAffectingAgent) {
+          this.applyEventEffectToAgent(agent, event);
+        }
+      }
+    }
+
+    // Apply global event rules
+    for (const event of activeEvents) {
+      if (event.effects.worldRules?.globalAggressionIncrease) {
+        for (const agent of this.agents.values()) {
+          const state = agent.getState();
+          if (state.isAlive) {
+            agent.updateStats({
+              aggression: state.stats.aggression + event.effects.worldRules.globalAggressionIncrease,
+            });
+          }
+        }
+      }
+
+      if (event.effects.worldRules?.globalFearIncrease) {
+        // Fear isn't a direct stat, but we can increase risk-aversion
+        for (const agent of this.agents.values()) {
+          const state = agent.getState();
+          if (state.isAlive) {
+            agent.updateStats({
+              riskTolerance: Math.max(0, state.stats.riskTolerance - event.effects.worldRules.globalFearIncrease),
+            });
+          }
+        }
+      }
+    }
+
+    // Log event impacts
+    for (const [agentId, events] of affectedAgents.entries()) {
+      const agent = this.agents.get(agentId);
+      if (!agent) continue;
+
+      const state = agent.getState();
+      const eventDescriptions = events.map(e => `${e.type} (${e.severity})`).join(', ');
+
+      this.logger.logEvent({
+        type: 'event',
+        description: `${state.name} affected by: ${eventDescriptions}`,
+        agentIds: [agentId],
+        metadata: {
+          events: events.map(e => ({
+            eventId: e.id,
+            type: e.type,
+            severity: e.severity,
+          })),
+          position: state.position,
+          health: state.health,
+          energy: state.stats.energy,
+        },
+      });
+    }
+  }
+
+  /**
+   * Apply specific event effects to an agent
+   */
+  private applyEventEffectToAgent(agent: BaseAgent, event: WorldEvent): void {
+    const state = agent.getState();
+    const effects = event.effects;
+
+    // Apply agent effects
+    if (effects.agentEffects) {
+      // Health damage
+      if (effects.agentEffects.healthDamage) {
+        agent.takeDamage(effects.agentEffects.healthDamage);
+      }
+
+      // Energy drain
+      if (effects.agentEffects.energyDrain) {
+        agent.updateStats({
+          energy: Math.max(0, state.stats.energy - effects.agentEffects.energyDrain),
+        });
+      }
+
+      // Stat modifiers
+      if (effects.agentEffects.statModifiers) {
+        const currentStats = state.stats;
+        const modifiers: Partial<AgentStats> = {};
+
+        for (const [stat, value] of Object.entries(effects.agentEffects.statModifiers)) {
+          if (value !== undefined) {
+            const statKey = stat as keyof AgentStats;
+            modifiers[statKey] = currentStats[statKey] + value;
+          }
+        }
+
+        agent.updateStats(modifiers);
+      }
+    }
+
+    // Update event metadata
+    if (event.metadata) {
+      event.metadata.affectedAgentCount = (event.metadata.affectedAgentCount || 0) + 1;
+      event.metadata.totalDamageDealt =
+        (event.metadata.totalDamageDealt || 0) + (effects.agentEffects?.healthDamage || 0);
     }
   }
 

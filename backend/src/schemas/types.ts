@@ -323,3 +323,77 @@ export interface PlanHistory {
   averageSuccessRate: number;
   preferredPlanLength: number; // Agent's preferred number of steps
 }
+
+/**
+ * World Events System Types
+ */
+
+export enum WorldEventType {
+  STORM = 'storm',
+  ANOMALY = 'anomaly',
+  RADIATION_ZONE = 'radiation_zone',
+  RESOURCE_BOON = 'resource_boon',
+  CHAOS_SPIKE = 'chaos_spike',
+  SCARCITY_CYCLE = 'scarcity_cycle',
+}
+
+export enum EventSeverity {
+  MINOR = 'minor',
+  MODERATE = 'moderate',
+  SEVERE = 'severe',
+  CATASTROPHIC = 'catastrophic',
+}
+
+export interface WorldEvent {
+  id: string;
+  type: WorldEventType;
+  severity: EventSeverity;
+  epicenter: Position; // Center of event
+  radius: number; // How far the event affects (tiles)
+  duration: number; // How many turns the event lasts
+  createdAt: number; // Timestamp
+  createdAtTurn: number; // Turn number
+  expiresAtTurn: number; // When event ends
+  active: boolean;
+  effects: EventEffects;
+  metadata?: Record<string, any>;
+}
+
+export interface EventEffects {
+  // Tile modifications
+  tileChanges?: {
+    convertToType?: TileType; // Change affected tiles to this type
+    damageMultiplier?: number; // Multiplier for damage in area (1.0 = normal)
+    resourceMultiplier?: number; // Multiplier for resource values
+    movementCost?: number; // Extra energy cost to move through area
+  };
+
+  // Agent debuffs/buffs
+  agentEffects?: {
+    healthDamage?: number; // Damage per turn in area
+    energyDrain?: number; // Energy loss per turn
+    statModifiers?: Partial<AgentStats>; // Temporary stat changes
+    visionReduction?: number; // Reduce vision radius
+    confused?: boolean; // Random movement
+    buffed?: boolean; // Positive effects
+  };
+
+  // World rule changes
+  worldRules?: {
+    disableGathering?: boolean; // Can't gather resources
+    disableCommunication?: boolean; // Can't send messages
+    disableAlliances?: boolean; // Can't form alliances
+    doubleResourceCost?: boolean; // Actions cost 2x energy
+    globalFearIncrease?: number; // Increase all agents' fear
+    globalAggressionIncrease?: number; // Increase all agents' aggression
+  };
+}
+
+export interface ActiveEventEffect {
+  eventId: string;
+  eventType: WorldEventType;
+  affectedAgentIds: string[];
+  affectedTilePositions: Position[];
+  appliedAt: number;
+  expiresAt: number;
+}
