@@ -454,6 +454,53 @@ app.get('/api/relations', (req, res) => {
 });
 
 /**
+ * GET /api/agents/:id/memory
+ * Get memory data for a specific agent
+ */
+app.get('/api/agents/:id/memory', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const { id } = req.params;
+    const state = engine.getState();
+    const agent = state.agents.find(a => a.id === id);
+
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    // Get agent from engine to access memory
+    const agentInstance = Array.from((engine as any).agents.values())
+      .find((a: any) => a.getState().id === id);
+
+    if (!agentInstance) {
+      return res.status(404).json({ error: 'Agent instance not found' });
+    }
+
+    const memoryManager = (agentInstance as any).getMemoryManager();
+    const memorySummary = memoryManager.getSummary();
+    const fullExport = memoryManager.export();
+
+    res.json({
+      agentId: id,
+      agentName: agent.name,
+      summary: memorySummary,
+      recentEpisodes: fullExport.episodes.slice(-20),
+      importantEpisodes: memorySummary.episodic.important,
+      allFacts: fullExport.facts,
+      confidentFacts: memorySummary.semantic.confident,
+      strategicKnowledge: memorySummary.semantic.strategic,
+      stats: fullExport.stats,
+    });
+  } catch (error: any) {
+    console.error('Error fetching agent memory:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/agents/add
  * Add a new agent to the simulation
  */

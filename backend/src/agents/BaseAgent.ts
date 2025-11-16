@@ -18,9 +18,11 @@ import {
   Inventory,
   Message,
 } from '../schemas/types';
+import { MemoryManager } from './memory/MemoryManager';
 
 export abstract class BaseAgent {
   protected state: AgentState;
+  protected memoryManager: MemoryManager;
 
   constructor(
     name: string,
@@ -28,8 +30,10 @@ export abstract class BaseAgent {
     position: Position,
     goals: Goal[]
   ) {
+    const id = uuidv4();
+
     this.state = {
-      id: uuidv4(),
+      id,
       name,
       position,
       personality,
@@ -48,6 +52,14 @@ export abstract class BaseAgent {
       isAlive: true,
       allegiances: [],
     };
+
+    // Initialize advanced memory system
+    this.memoryManager = new MemoryManager(id, {
+      maxEpisodes: 100,
+      maxFacts: 50,
+      episodeDecayRate: 0.5,
+      consolidationInterval: 10,
+    });
   }
 
   /**
@@ -242,7 +254,7 @@ export abstract class BaseAgent {
   }
 
   /**
-   * Evaluate alliance worthiness based on personality
+   * Evaluate alliance worthiness based on personality and memory
    * Returns score 0-100 indicating willingness to ally
    */
   evaluateAllianceProposal(proposerId: string, proposerStats: AgentStats): number {
@@ -269,6 +281,16 @@ export abstract class BaseAgent {
     // Low health? More eager for protection
     if (this.state.health < 50) {
       score += 15;
+    }
+
+    // Memory-based modifiers
+    const memoryModifiers = this.memoryManager.getDecisionModifiers(proposerId);
+    score += memoryModifiers.trustModifier * 30; // Trust heavily influences alliance
+    score += memoryModifiers.cooperationModifier * 20;
+
+    // Check if we remember betrayals
+    if (this.memoryManager.hasMemoryOf('betray', proposerId)) {
+      score -= 40; // Strong penalty for past betrayals
     }
 
     return Math.max(0, Math.min(100, score));
@@ -317,5 +339,107 @@ export abstract class BaseAgent {
    */
   protected getTrait(trait: keyof AgentStats): number {
     return this.state.stats[trait];
+  }
+
+  /**
+   * Get memory manager (for external access)
+   */
+  getMemoryManager(): MemoryManager {
+    return this.memoryManager;
+  }
+
+  /**
+   * Update memory system each turn
+   */
+  updateMemory(turn: number): void {
+    this.memoryManager.tick(turn);
+  }
+
+  /**
+   * Record an action to memory
+   */
+  recordAction(
+    turn: number,
+    actionType: string,
+    success: boolean,
+    targetAgent?: string,
+    metadata?: any
+  ): void {
+    this.memoryManager.rememberEpisode(
+      turn,
+      'action',
+      actionType,
+      `Performed ${actionType} ${success ? 'successfully' : 'unsuccessfully'}`,
+      {
+        otherAgents: targetAgent ? [targetAgent] : undefined,
+        location: this.state.position,
+        emotion: success ? 'positive' : 'negative',
+        importance: 40,
+        metadata: {
+          outcome: success ? 'success' : 'failure',
+          ...metadata,
+        },
+      }
+    );
+  }
+
+  /**
+   * Record an interaction to memory
+   */
+  recordInteraction(
+    turn: number,
+    event: string,
+    description: string,
+    otherAgentIds: string[],
+    emotion: 'positive' | 'negative' | 'neutral',
+    importance: number = 50,
+    metadata?: any
+  ): void {
+    this.memoryManager.rememberEpisode(
+      turn,
+      'interaction',
+      event,
+      description,
+      {
+        otherAgents: otherAgentIds,
+        location: this.state.position,
+        emotion,
+        importance,
+        metadata,
+      }
+    );
+  }
+
+  /**
+   * Learn a fact about another agent
+   */
+  learnAboutAgent(
+    agentId: string,
+    category: 'agent_trait' | 'agent_behavior' | 'relationship',
+    predicate: string,
+    detail: string,
+    importance: number = 50
+  ): void {
+    this.memoryManager.learnFact(
+      category,
+      agentId,
+      predicate,
+      detail,
+      importance,
+      { relatedAgents: [agentId] }
+    );
+  }
+
+  /**
+   * Get decision modifiers based on memory of target agent
+   */
+  getMemoryBasedModifiers(targetAgentId?: string): {
+    trustModifier: number;
+    aggressionModifier: number;
+    cooperationModifier: number;
+    riskModifier: number;
+    reasoning: string[];
+  } {
+    return this.memoryManager.getDecisionModifiers(targetAgentId);
   }
 }

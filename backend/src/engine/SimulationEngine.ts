@@ -443,6 +443,15 @@ export class SimulationEngine {
     // Record action for trait drift
     this.traitDrift.recordAction(action.agentId, action.type, success);
 
+    // Record action in agent's episodic memory
+    agent.recordAction(
+      this.currentTurn,
+      action.type,
+      success,
+      typeof action.target === 'string' ? action.target : undefined,
+      { effects }
+    );
+
     return {
       success,
       action,
@@ -547,6 +556,26 @@ export class SimulationEngine {
       // Record betrayal for trait drift
       this.traitDrift.recordBetrayalReceived(targetId);
 
+      // Record betrayal in memory (VERY important memory)
+      target.recordInteraction(
+        this.currentTurn,
+        'betray',
+        `${attacker.name} attempted to attack me despite our alliance!`,
+        [attacker.id],
+        'negative',
+        100, // Maximum importance
+        { allianceId: alliance.id, betrayalType: 'attack_attempt' }
+      );
+
+      // Learn that this agent cannot be trusted
+      target.learnAboutAgent(
+        attacker.id,
+        'relationship',
+        'cannot be trusted',
+        `Attempted to betray alliance`,
+        100
+      );
+
       this.logger.logEvent({
         type: 'interaction',
         description: `${attacker.name} attempted to attack ally ${targetState.name} but was prevented by alliance`,
@@ -566,6 +595,36 @@ export class SimulationEngine {
     // Record attack for trait drift
     this.traitDrift.recordAttackGiven(attacker.id);
     this.traitDrift.recordAttackReceived(targetId);
+
+    // Record attack in memory
+    agent.recordInteraction(
+      this.currentTurn,
+      'attack',
+      `Attacked ${targetState.name} for ${damage} damage`,
+      [targetId],
+      'negative',
+      50,
+      { damage }
+    );
+
+    target.recordInteraction(
+      this.currentTurn,
+      'attack',
+      `Was attacked by ${attacker.name} for ${damage} damage`,
+      [attacker.id],
+      'negative',
+      70, // Being attacked is more important
+      { damage, healthRemaining: target.getState().health }
+    );
+
+    // Learn that this agent is aggressive
+    target.learnAboutAgent(
+      attacker.id,
+      'agent_behavior',
+      'tends to attack',
+      `Has attacked me in combat`,
+      60
+    );
 
     if (!target.getState().isAlive) {
       effects.push(`${targetState.name} was killed`);
@@ -768,6 +827,36 @@ export class SimulationEngine {
       if (offer.protocol === NegotiationProtocol.TRADE) {
         this.traitDrift.recordTradeCompleted(negotiator.id);
         this.traitDrift.recordTradeCompleted(targetState.id);
+
+        // Record successful trade in memory
+        agent.recordInteraction(
+          this.currentTurn,
+          'trade',
+          `Successful trade with ${targetState.name}`,
+          [targetState.id],
+          'positive',
+          60,
+          { protocol: offer.protocol, resources: offer.offering }
+        );
+
+        target.recordInteraction(
+          this.currentTurn,
+          'trade',
+          `Successful trade with ${negotiator.name}`,
+          [negotiator.id],
+          'positive',
+          60,
+          { protocol: offer.protocol, resources: offer.requesting }
+        );
+
+        // Learn that this agent is willing to trade
+        agent.learnAboutAgent(
+          targetState.id,
+          'agent_behavior',
+          'willing to trade',
+          `Has successfully traded with me`,
+          50
+        );
       }
     } else {
       effects.push(`Negotiation rejected: ${response.reason}`);
@@ -945,6 +1034,44 @@ export class SimulationEngine {
       // Record alliance formation for trait drift
       this.traitDrift.recordAllianceFormed(requester.id);
       this.traitDrift.recordAllianceFormed(targetId);
+
+      // Record alliance in memory
+      agent.recordInteraction(
+        this.currentTurn,
+        'alliance',
+        `Formed alliance with ${targetState.name}`,
+        [targetId],
+        'positive',
+        80,
+        { allianceId: alliance.id, strength: alliance.strength }
+      );
+
+      target.recordInteraction(
+        this.currentTurn,
+        'alliance',
+        `Formed alliance with ${requester.name}`,
+        [requester.id],
+        'positive',
+        80,
+        { allianceId: alliance.id, strength: alliance.strength }
+      );
+
+      // Learn that this agent is trustworthy
+      agent.learnAboutAgent(
+        targetId,
+        'relationship',
+        'is a trusted ally',
+        `Formed alliance together`,
+        80
+      );
+
+      target.learnAboutAgent(
+        requester.id,
+        'relationship',
+        'is a trusted ally',
+        `Formed alliance together`,
+        80
+      );
 
       this.logger.logEvent({
         type: 'interaction',
@@ -1167,6 +1294,7 @@ export class SimulationEngine {
   /**
    * Apply trait drift to all agents
    * Called each turn to evolve agent personalities based on experiences
+   * Also updates agent memory systems
    */
   private applyTraitDrift(): void {
     const worldTiles = this.world.getAllTiles();
@@ -1184,6 +1312,9 @@ export class SimulationEngine {
 
       // Apply drift
       const driftResult = this.traitDrift.tick(agent, worldTiles, nearbyAgentIds);
+
+      // Update agent memory system
+      agent.updateMemory(this.currentTurn);
 
       // Log significant drift (magnitude > 1.0)
       if (driftResult.magnitude > 1.0) {

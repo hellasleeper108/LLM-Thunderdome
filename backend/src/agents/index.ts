@@ -8,4 +8,5 @@ export { ScriptedAgent, type Strategy, type ScriptedAgentConfig } from './Script
 export { AllianceManager } from './AllianceManager';
 export { SocialGraph, type RelationshipWeights, type SocialRelationship, type SocialSummary } from './SocialGraph';
 export { TraitDrift, type DriftResult, type AgentExperience } from './TraitDrift';
+export * from './memory';
 export * from './personalities';
