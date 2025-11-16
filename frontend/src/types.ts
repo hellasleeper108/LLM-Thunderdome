@@ -111,3 +111,73 @@ export interface WorldState {
   height: number;
   tiles: Tile[][];
 }
+
+// Replay System Types
+export interface WorldEvent {
+  id: string;
+  type: 'storm' | 'anomaly' | 'radiation_zone' | 'resource_boon' | 'chaos_spike' | 'scarcity_cycle';
+  severity: 'minor' | 'moderate' | 'severe' | 'catastrophic';
+  position: Position;
+  radius: number;
+  duration: number;
+  turnsRemaining: number;
+  spawnedAt: number;
+  description: string;
+}
+
+export interface ActionResult {
+  agentId: string;
+  action: {
+    type: string;
+    target?: Position | string;
+    payload?: any;
+  };
+  success: boolean;
+  result?: string;
+}
+
+export interface ReplayFrame {
+  turn: number;
+  timestamp: number;
+  worldState: {
+    tiles: Tile[][];
+    agents: AgentState[];
+    activeEvents: WorldEvent[];
+  };
+  actions: ActionResult[];
+  messages: Message[];
+  metadata?: {
+    totalAgentsAlive: number;
+    totalResourcesGathered: number;
+    alliancesActive: number;
+  };
+}
+
+export interface ReplayMetadata {
+  simulationId: string;
+  createdAt: number;
+  totalTurns: number;
+  finalTurn: number;
+  preset?: string;
+  worldSize: { width: number; height: number };
+  agentCount: number;
+  winner?: {
+    agentId: string;
+    agentName: string;
+    reason: string;
+  };
+}
+
+export interface Replay {
+  metadata: ReplayMetadata;
+  frames: ReplayFrame[];
+  version: string;
+}
+
+export interface ReplayPlaybackState {
+  currentTurn: number;
+  isPlaying: boolean;
+  playbackSpeed: number;
+  totalTurns: number;
+  replay: Replay | null;
+}

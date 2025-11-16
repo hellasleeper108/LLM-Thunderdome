@@ -3,3 +3,5 @@
  */
 
 export { EventLogger, type LoggerConfig } from './EventLogger';
+export { ReplayRecorder } from './ReplayRecorder';
+export { ReplayPlayback } from './ReplayPlayback';

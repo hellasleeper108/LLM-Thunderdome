@@ -12,6 +12,7 @@ import { EventLogger } from '../logging/EventLogger';
 import { NegotiationEngine } from './NegotiationEngine';
 import { PlanningEngine } from '../agents/planning/PlanningEngine';
 import { WorldEventsManager } from '../world/events/WorldEvents';
+import { ReplayRecorder } from '../logging/ReplayRecorder';
 import {
   Action,
   ActionType,
@@ -28,6 +29,8 @@ import {
   PlanStatus,
   WorldEvent,
   AgentStats,
+  Replay,
+  Tile,
 } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -52,6 +55,7 @@ export class SimulationEngine {
   private traitDrift: TraitDrift;
   private planningEngine: PlanningEngine;
   private worldEventsManager: WorldEventsManager;
+  private replayRecorder: ReplayRecorder;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -94,6 +98,21 @@ export class SimulationEngine {
     this.turnTimer = null;
     this.messages = [];
     this.actionResults = [];
+
+    // Initialize replay recorder
+    const worldDimensions = this.world.getDimensions();
+    this.replayRecorder = new ReplayRecorder(
+      `Simulation-${Date.now()}`, // simulationName
+      worldDimensions.width,
+      worldDimensions.height,
+      0, // agentCount - will be updated as agents are added
+      undefined, // presetUsed - can be set later
+      {
+        autoSave: false,
+        compressionEnabled: false,
+        maxFrames: config.maxTurns,
+      }
+    );
   }
 
   /**
@@ -135,6 +154,8 @@ export class SimulationEngine {
     }
 
     this.status = 'running';
+    this.replayRecorder.startRecording(); // Start recording replay
+
     this.logger.logEvent({
       type: 'state_update',
       description: 'Simulation started',
@@ -205,6 +226,21 @@ export class SimulationEngine {
     // Reset all agents
     this.agents.clear();
 
+    // Reinitialize replay recorder
+    const worldDimensions = this.world.getDimensions();
+    this.replayRecorder = new ReplayRecorder(
+      `Simulation-${Date.now()}`, // new simulationName
+      worldDimensions.width,
+      worldDimensions.height,
+      0, // agentCount
+      undefined, // presetUsed
+      {
+        autoSave: false,
+        compressionEnabled: false,
+        maxFrames: this.config.maxTurns,
+      }
+    );
+
     this.logger.logEvent({
       type: 'state_update',
       description: 'Simulation reset',
@@ -263,6 +299,9 @@ export class SimulationEngine {
       description: `Turn ${this.currentTurn} completed`,
       agentIds: [],
     });
+
+    // Record turn for replay
+    this.recordTurnToReplay();
 
     // Schedule next turn if auto-advancing
     if (this.config.autoAdvance && this.status === 'running') {
@@ -1715,6 +1754,8 @@ export class SimulationEngine {
    */
   private complete(): void {
     this.status = 'completed';
+    this.replayRecorder.stopRecording(); // Stop recording replay
+
     if (this.turnTimer) {
       clearTimeout(this.turnTimer);
       this.turnTimer = null;
@@ -1725,6 +1766,24 @@ export class SimulationEngine {
       description: 'Simulation completed',
       agentIds: [],
     });
+  }
+
+  /**
+   * Record current turn state to replay
+   */
+  private recordTurnToReplay(): void {
+    const tiles = this.world.getAllTiles();
+    const agents = Array.from(this.agents.values()).map(a => a.getState());
+    const activeEvents = this.worldEventsManager.getActiveEvents();
+
+    this.replayRecorder.recordTurn(
+      this.currentTurn,
+      tiles,
+      agents,
+      activeEvents,
+      this.actionResults,
+      this.messages
+    );
   }
 
   /**
@@ -1786,5 +1845,26 @@ export class SimulationEngine {
    */
   getTraitDrift(): TraitDrift {
     return this.traitDrift;
+  }
+
+  /**
+   * Get replay data
+   */
+  getReplay(): Replay {
+    return this.replayRecorder.getReplay();
+  }
+
+  /**
+   * Export replay as JSON string
+   */
+  exportReplay(): string {
+    return this.replayRecorder.exportReplay();
+  }
+
+  /**
+   * Get replay recorder (for advanced queries)
+   */
+  getReplayRecorder(): ReplayRecorder {
+    return this.replayRecorder;
   }
 }

@@ -397,3 +397,57 @@ export interface ActiveEventEffect {
   appliedAt: number;
   expiresAt: number;
 }
+
+/**
+ * Replay System Types
+ */
+
+export interface ReplayFrame {
+  turn: number;
+  timestamp: number;
+  worldState: {
+    tiles: Tile[][];
+    agents: AgentState[];
+    activeEvents: WorldEvent[];
+  };
+  actions: ActionResult[];
+  messages: Message[];
+  metadata?: {
+    totalAgentsAlive: number;
+    totalResourcesGathered: number;
+    alliancesActive: number;
+  };
+}
+
+export interface ReplayMetadata {
+  id: string;
+  simulationName: string;
+  createdAt: number;
+  totalTurns: number;
+  totalDuration: number; // milliseconds
+  agentCount: number;
+  worldDimensions: { width: number; height: number };
+  presetUsed?: string;
+  winner?: string; // Agent ID if there's a winner
+  finalStats?: {
+    survivingAgents: number;
+    totalActions: number;
+    totalNegotiations: number;
+    totalAlliances: number;
+    totalCombats: number;
+  };
+}
+
+export interface Replay {
+  metadata: ReplayMetadata;
+  frames: ReplayFrame[];
+  version: string; // For compatibility tracking
+}
+
+export interface ReplayPlaybackState {
+  currentTurn: number;
+  isPlaying: boolean;
+  playbackSpeed: number; // 0.5x, 1x, 2x, etc.
+  totalTurns: number;
+  replay: Replay | null;
+}

@@ -10,6 +10,7 @@ import { ArenaView } from './components/ArenaView';
 import { AgentInspector } from './components/AgentInspector';
 import { EventLog } from './components/EventLog';
 import { SimulationControls } from './components/SimulationControls';
+import { ReplayViewer } from './components/ReplayViewer';
 
 function App() {
   const { setSimulation, setWorld, setLogs, addLog, setWebSocket, setConnected } = useStore();
@@ -105,6 +106,9 @@ function App() {
 
       {/* Main Content */}
       <main className="h-[calc(100vh-88px)] p-4">
+        {/* Replay Viewer (appears when in replay mode) */}
+        <ReplayViewer />
+
         <div className="grid grid-cols-12 gap-4 h-full">
           {/* Left Column: Controls */}
           <div className="col-span-3 h-full">
