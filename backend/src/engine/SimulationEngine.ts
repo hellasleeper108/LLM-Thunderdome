@@ -10,6 +10,7 @@ import { TraitDrift } from '../agents/TraitDrift';
 import { World } from '../world/World';
 import { EventLogger } from '../logging/EventLogger';
 import { NegotiationEngine } from './NegotiationEngine';
+import { PlanningEngine } from '../agents/planning/PlanningEngine';
 import {
   Action,
   ActionType,
@@ -23,6 +24,7 @@ import {
   NegotiationProtocol,
   ResourceOffer,
   Alliance,
+  PlanStatus,
 } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -43,6 +45,7 @@ export class SimulationEngine {
   private negotiationEngine: NegotiationEngine;
   private allianceManager: AllianceManager;
   private traitDrift: TraitDrift;
+  private planningEngine: PlanningEngine;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -61,6 +64,7 @@ export class SimulationEngine {
     this.negotiationEngine = new NegotiationEngine(this.socialGraph);
     this.allianceManager = new AllianceManager(this.socialGraph);
     this.traitDrift = new TraitDrift(this.socialGraph, 1.0); // 1.0 = normal drift rate
+    this.planningEngine = new PlanningEngine();
 
     this.config = {
       turnDuration: config.turnDuration,
@@ -329,14 +333,86 @@ export class SimulationEngine {
 
   /**
    * Collect actions from all agents
+   * Uses planning system: if agent has active plan, execute next step
+   * Otherwise, generate new plan
    */
   private async collectActions(observations: Map<string, Observation>): Promise<Action[]> {
     const actionPromises: Promise<Action>[] = [];
 
     for (const [agentId, agent] of this.agents.entries()) {
       const observation = observations.get(agentId);
-      if (observation) {
-        actionPromises.push(agent.decideAction(observation));
+      if (!observation) continue;
+
+      const state = agent.getState();
+      if (!state.isAlive) continue;
+
+      // Planning system integration
+      const activePlan = agent.getActivePlan();
+      if (activePlan && activePlan.status === PlanStatus.ACTIVE) {
+        // Agent has active plan - execute next step
+        const planAction = this.planningEngine.executePlanStep(state);
+
+        if (planAction) {
+          // Log plan step execution
+          this.logger.logEvent({
+            type: 'action',
+            description: `${state.name} executing plan step ${activePlan.currentStepIndex + 1}/${activePlan.steps.length}: ${planAction.type}`,
+            agentIds: [agentId],
+            metadata: {
+              planId: activePlan.id,
+              stepNumber: activePlan.currentStepIndex + 1,
+              actionType: planAction.type,
+            },
+          });
+
+          actionPromises.push(Promise.resolve(planAction));
+        } else {
+          // Plan is complete or invalid - fall back to normal decision
+          actionPromises.push(agent.decideAction(observation));
+        }
+      } else {
+        // No active plan - generate new plan
+        const newPlan = this.planningEngine.generatePlan(
+          state,
+          state.goals,
+          this.world,
+          this.currentTurn
+        );
+
+        if (newPlan) {
+          // Set the new plan
+          agent.setActivePlan(newPlan);
+
+          // Log plan creation
+          this.logger.logEvent({
+            type: 'state_update',
+            description: `${state.name} created new plan: ${newPlan.steps.length} steps to achieve "${state.goals.find(g => g.id === newPlan.goalId)?.description || 'goal'}"`,
+            agentIds: [agentId],
+            metadata: {
+              planId: newPlan.id,
+              goalId: newPlan.goalId,
+              steps: newPlan.steps.map(s => ({
+                stepNumber: s.stepNumber,
+                action: s.action.type,
+                reasoning: s.reasoning,
+              })),
+              priority: newPlan.metadata?.priority,
+              riskLevel: newPlan.metadata?.riskLevel,
+            },
+          });
+
+          // Execute first step
+          const firstAction = this.planningEngine.executePlanStep(state);
+          if (firstAction) {
+            actionPromises.push(Promise.resolve(firstAction));
+          } else {
+            // Fallback to normal decision
+            actionPromises.push(agent.decideAction(observation));
+          }
+        } else {
+          // Could not generate plan - use normal decision making
+          actionPromises.push(agent.decideAction(observation));
+        }
       }
     }
 
@@ -451,6 +527,32 @@ export class SimulationEngine {
       typeof action.target === 'string' ? action.target : undefined,
       { effects }
     );
+
+    // Advance plan if agent has active plan
+    const activePlan = agent.getActivePlan();
+    if (activePlan && activePlan.status === PlanStatus.ACTIVE) {
+      // Get mutable state for plan advancement
+      const mutableState = agent.getState();
+      this.planningEngine.advancePlan(mutableState, success);
+
+      // Update agent's plan after advancement
+      agent.setActivePlan(mutableState.activePlan);
+
+      // Log plan completion if finished
+      const updatedPlan = agent.getActivePlan();
+      if (updatedPlan && updatedPlan.status === PlanStatus.COMPLETED) {
+        this.logger.logEvent({
+          type: 'state_update',
+          description: `${state.name} completed plan: ${updatedPlan.steps.length} steps with ${updatedPlan.successRate.toFixed(1)}% success rate`,
+          agentIds: [action.agentId],
+          metadata: {
+            planId: updatedPlan.id,
+            successRate: updatedPlan.successRate,
+            actualDuration: updatedPlan.actualDuration,
+          },
+        });
+      }
+    }
 
     return {
       success,

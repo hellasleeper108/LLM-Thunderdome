@@ -51,6 +51,15 @@ export abstract class BaseAgent {
       health: 100,
       isAlive: true,
       allegiances: [],
+      activePlan: undefined,
+      planHistory: {
+        completedPlans: [],
+        failedPlans: [],
+        abandonedPlans: [],
+        totalPlansCreated: 0,
+        averageSuccessRate: 0,
+        preferredPlanLength: 3,
+      },
     };
 
     // Initialize advanced memory system
@@ -346,6 +355,34 @@ export abstract class BaseAgent {
    */
   getMemoryManager(): MemoryManager {
     return this.memoryManager;
+  }
+
+  /**
+   * Set active plan
+   */
+  setActivePlan(plan: any): void {
+    this.state.activePlan = plan;
+  }
+
+  /**
+   * Get active plan
+   */
+  getActivePlan(): any {
+    return this.state.activePlan;
+  }
+
+  /**
+   * Clear active plan
+   */
+  clearActivePlan(): void {
+    this.state.activePlan = undefined;
+  }
+
+  /**
+   * Get plan history
+   */
+  getPlanHistory(): any {
+    return this.state.planHistory;
   }
 
   /**

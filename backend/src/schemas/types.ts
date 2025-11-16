@@ -77,6 +77,8 @@ export interface AgentState {
   health: number;
   isAlive: boolean;
   allegiances: string[]; // IDs of allied agents
+  activePlan?: Plan; // Current plan being executed
+  planHistory: PlanHistory; // Historical record of all plans
 }
 
 export enum ActionType {
@@ -272,4 +274,52 @@ export interface SocialRelationship {
   weights: RelationshipWeights;
   lastUpdated: number;
   interactionCount: number;
+}
+
+/**
+ * Planning System Types
+ */
+
+export enum PlanStatus {
+  ACTIVE = 'active',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  ABANDONED = 'abandoned',
+}
+
+export interface PlanStep {
+  stepNumber: number;
+  action: Action;
+  expectedOutcome: string;
+  reasoning: string;
+  fallbackAction?: Action; // Backup if primary action fails
+}
+
+export interface Plan {
+  id: string;
+  agentId: string;
+  goalId: string; // Which goal this plan aims to achieve
+  steps: PlanStep[];
+  currentStepIndex: number;
+  status: PlanStatus;
+  createdAt: number; // Timestamp
+  createdAtTurn: number; // Turn number when plan was created
+  completedAt?: number; // Timestamp when completed/failed/abandoned
+  expectedDuration: number; // Turns (2-6)
+  actualDuration?: number; // Actual turns taken
+  successRate: number; // % of steps successfully executed (0-100)
+  metadata?: {
+    priority: 'high' | 'medium' | 'low';
+    adaptability: number; // How easily plan can adapt to changes (0-100)
+    riskLevel: number; // How risky the plan is (0-100)
+  };
+}
+
+export interface PlanHistory {
+  completedPlans: Plan[];
+  failedPlans: Plan[];
+  abandonedPlans: Plan[];
+  totalPlansCreated: number;
+  averageSuccessRate: number;
+  preferredPlanLength: number; // Agent's preferred number of steps
 }
