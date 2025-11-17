@@ -17,6 +17,7 @@ import { getPersonality, ALL_PERSONALITIES, personalityFromGenome } from './agen
 import { Position, FitnessCriteria, AgentGenome } from './schemas/types';
 import { AnalyticsEngine } from './analytics';
 import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
+import { FactionManager, LawSystem, LawType } from './civilization';
 
 const app = express();
 const server = createServer(app);
@@ -35,6 +36,10 @@ let stateManager: StateManager | null = null;
 // Cluster state
 let simulationCluster: SimulationCluster | null = null;
 let clusterResults: AggregatedResults | null = null;
+
+// Civilization state
+let factionManager: FactionManager | null = null;
+let lawSystem: LawSystem | null = null;
 
 // WebSocket clients
 const clients = new Set<WebSocket>();
@@ -1021,6 +1026,135 @@ app.post('/api/evolution/next-generation', (req, res) => {
     });
   } catch (error: any) {
     console.error('Error generating next generation:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/factions
+ * Get all factions and their state
+ */
+app.get('/api/civilization/factions', (req, res) => {
+  try {
+    if (!factionManager) {
+      return res.json({ factions: [] });
+    }
+
+    const factions = factionManager.listFactions().map(f => ({
+      ...f,
+      members: Array.from(f.members), // Convert Set to Array for JSON
+      stability: lawSystem ? lawSystem.computeFactionStability(f) : f.cohesion,
+    }));
+
+    res.json({ factions });
+  } catch (error: any) {
+    console.error('Error fetching factions:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/laws
+ * Get all laws in the system
+ */
+app.get('/api/civilization/laws', (req, res) => {
+  try {
+    if (!lawSystem) {
+      return res.json({ laws: [] });
+    }
+
+    const laws = lawSystem.listLaws();
+
+    res.json({ laws });
+  } catch (error: any) {
+    console.error('Error fetching laws:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/civilization/factions/debug-seed
+ * Debug endpoint to seed initial factions for testing
+ */
+app.post('/api/civilization/factions/debug-seed', (req, res) => {
+  try {
+    if (!engine) {
+      return res.status(400).json({ error: 'No active simulation. Create a simulation first.' });
+    }
+
+    // Initialize faction manager and law system if not already done
+    if (!factionManager) {
+      factionManager = new FactionManager();
+    }
+
+    if (!lawSystem) {
+      lawSystem = new LawSystem();
+    }
+
+    const agentStates = engine.getState().agents;
+
+    if (agentStates.length === 0) {
+      return res.status(400).json({ error: 'No agents in simulation' });
+    }
+
+    // Create 2-3 factions from agents
+    const agentsPerFaction = Math.ceil(agentStates.length / 3);
+    const createdFactions = [];
+
+    for (let i = 0; i < Math.min(3, agentStates.length); i++) {
+      const start = i * agentsPerFaction;
+      const end = Math.min(start + agentsPerFaction, agentStates.length);
+      const factionAgentStates = agentStates.slice(start, end);
+
+      if (factionAgentStates.length === 0) break;
+
+      const factionName = `Faction ${String.fromCharCode(65 + i)}`; // A, B, C
+
+      // Calculate faction stats from agent states
+      const avgAggression = factionAgentStates.reduce((sum, a) => sum + a.stats.aggression, 0) / factionAgentStates.length;
+      const avgDiplomacy = factionAgentStates.reduce((sum, a) => sum + a.stats.cooperation, 0) / factionAgentStates.length;
+
+      const faction = factionManager.createFactionFromIds(
+        factionName,
+        factionAgentStates.map(a => a.id),
+        {
+          description: `Auto-generated faction ${i + 1}`,
+          initialResources: {
+            food: 10,
+            water: 10,
+            materials: 5,
+          },
+          aggression: avgAggression,
+          diplomacy: avgDiplomacy,
+          cohesion: 0.7,
+          founded: engine.getCurrentTurn(),
+        }
+      );
+
+      // Add some default laws
+      const noAttackLaw = lawSystem.getLaw('law-no-attack');
+      const cooperationLaw = lawSystem.getLaw('law-cooperation');
+
+      if (noAttackLaw) {
+        factionManager.addLaw(faction.id, noAttackLaw.id);
+      }
+
+      if (cooperationLaw) {
+        factionManager.addLaw(faction.id, cooperationLaw.id);
+      }
+
+      createdFactions.push({
+        ...faction,
+        members: Array.from(faction.members),
+      });
+    }
+
+    res.json({
+      message: `Created ${createdFactions.length} factions`,
+      factions: createdFactions,
+    });
+  } catch (error: any) {
+    console.error('Error seeding factions:', error);
     res.status(500).json({ error: error.message });
   }
 });
