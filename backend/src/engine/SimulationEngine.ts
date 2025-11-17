@@ -286,6 +286,9 @@ export class SimulationEngine {
     // Clear previous turn's action results
     this.actionResults = [];
 
+    // Phase 0: Execute STAN god-mode commands
+    this.executeStanCommands();
+
     // Phase 1: All agents observe
     const observations = this.generateObservations();
 
@@ -1876,6 +1879,63 @@ export class SimulationEngine {
    */
   getTraitDrift(): TraitDrift {
     return this.traitDrift;
+  }
+
+  /**
+   * Execute pending STAN god-mode commands
+   */
+  private executeStanCommands(): void {
+    try {
+      const { getStanCommandExecutor } = require('../stan');
+      const executor = getStanCommandExecutor();
+
+      // Check if there are pending commands
+      const pending = executor.getPending();
+      if (pending.length === 0) {
+        return;
+      }
+
+      console.log(`[SimulationEngine] Executing ${pending.length} STAN commands...`);
+
+      // Build execution context
+      const context = {
+        engine: this,
+        world: this.world,
+        factions: this.factionManager,
+        laws: this.lawSystem,
+        beliefs: this.beliefSystem,
+        logger: this.logger,
+      };
+
+      // Execute all pending commands
+      const results = executor.executePendingCommands(context);
+
+      // Log execution summary
+      const successCount = results.filter(r => r.success).length;
+      const failureCount = results.filter(r => !r.success).length;
+
+      console.log(
+        `[SimulationEngine] STAN commands executed: ${successCount} succeeded, ${failureCount} failed`
+      );
+
+      // Send STAN event about command execution
+      try {
+        const stan = getStanBridge();
+        const event = stan.createEvent('AGENT_EVENT', {
+          message: `Executed ${results.length} god-mode commands`,
+          results: results.map(r => ({
+            success: r.success,
+            message: r.message,
+            effects: r.effects,
+          })),
+        });
+        stan.sendEvent(event);
+      } catch (error) {
+        // STAN may not be enabled, that's okay
+      }
+    } catch (error) {
+      console.error('[SimulationEngine] Error executing STAN commands:', error);
+    }
   }
 
   /**

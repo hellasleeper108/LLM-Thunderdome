@@ -1102,6 +1102,123 @@ app.delete('/api/stan/commentary', (req, res) => {
 });
 
 /**
+ * POST /api/stan/commands
+ * Submit a god-mode command for STAN to execute
+ */
+app.post('/api/stan/commands', (req, res) => {
+  try {
+    const { type, targetAgentId, targetFactionId, worldId, payload, issuedBy } = req.body;
+
+    // Validate command type
+    const validTypes = ['SMITE_AGENT', 'BLESS_AGENT', 'SPAWN_EVENT', 'ALTER_FACTION', 'ADJUST_LAW', 'GLOBAL_MODIFIER'];
+    if (!type || !validTypes.includes(type)) {
+      return res.status(400).json({
+        error: `Invalid command type. Must be one of: ${validTypes.join(', ')}`,
+      });
+    }
+
+    // Get command executor
+    const { getStanCommandExecutor } = require('./stan');
+    const executor = getStanCommandExecutor();
+
+    // Queue the command
+    const command = executor.queueCommand({
+      type,
+      targetAgentId,
+      targetFactionId,
+      worldId,
+      payload: payload || {},
+      issuedBy: issuedBy || 'STAN',
+    });
+
+    res.json({
+      success: true,
+      command,
+      message: 'Command queued for execution',
+    });
+  } catch (error: any) {
+    console.error('Error queueing STAN command:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/commands/recent
+ * Get recently executed STAN commands
+ */
+app.get('/api/stan/commands/recent', (req, res) => {
+  try {
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
+
+    // Validate limit
+    if (isNaN(limit) || limit < 1 || limit > 100) {
+      return res.status(400).json({
+        error: 'limit must be between 1 and 100',
+      });
+    }
+
+    // Get command executor
+    const { getStanCommandExecutor } = require('./stan');
+    const executor = getStanCommandExecutor();
+
+    const history = executor.getHistory(limit);
+    const pending = executor.getPending();
+    const stats = executor.getStats();
+
+    res.json({
+      history,
+      pending,
+      stats,
+    });
+  } catch (error: any) {
+    console.error('Error fetching STAN command history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/commands/pending
+ * Get pending STAN commands
+ */
+app.get('/api/stan/commands/pending', (req, res) => {
+  try {
+    const { getStanCommandExecutor } = require('./stan');
+    const executor = getStanCommandExecutor();
+
+    const pending = executor.getPending();
+
+    res.json({
+      pending,
+      count: pending.length,
+    });
+  } catch (error: any) {
+    console.error('Error fetching pending commands:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/stan/commands/pending
+ * Clear all pending STAN commands
+ */
+app.delete('/api/stan/commands/pending', (req, res) => {
+  try {
+    const { getStanCommandExecutor } = require('./stan');
+    const executor = getStanCommandExecutor();
+
+    executor.clearPending();
+
+    res.json({
+      success: true,
+      message: 'All pending commands cleared',
+    });
+  } catch (error: any) {
+    console.error('Error clearing pending commands:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/cluster/start
  * Start a cluster of simulations running in parallel
  */

@@ -19,3 +19,13 @@ export {
   type StanCommentary,
   type CommentaryScope,
 } from './StanCommentaryStore';
+
+export {
+  StanCommandExecutor,
+  getStanCommandExecutor,
+  setStanCommandExecutor,
+  type StanCommand,
+  type StanCommandType,
+  type CommandExecutionContext,
+  type CommandExecutionResult,
+} from './StanCommands';
