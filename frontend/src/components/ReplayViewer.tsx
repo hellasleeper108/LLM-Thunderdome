@@ -6,6 +6,34 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useStore } from '../store';
 
+interface CameraKeyframe {
+  turn: number;
+  position: { x: number; y: number; z: number };
+  lookAt: { x: number; y: number; z: number };
+  easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
+  duration?: number;
+}
+
+interface HighlightSequence {
+  turn: number;
+  agentIds?: string[];
+  worldLocation?: { x: number; y: number };
+  label?: string;
+  intensity?: number;
+  duration?: number;
+}
+
+interface CinematicReplayScript {
+  replayId: string;
+  cameraPath: CameraKeyframe[];
+  highlights: HighlightSequence[];
+  metadata?: {
+    totalTurns: number;
+    focusMode?: string;
+    generatedAt: number;
+  };
+}
+
 export function ReplayViewer() {
   const {
     replay,
@@ -20,6 +48,10 @@ export function ReplayViewer() {
   const [localIsPlaying, setLocalIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [cinematicScript, setCinematicScript] = useState<CinematicReplayScript | null>(null);
+  const [cinematicMode, setCinematicMode] = useState(false);
+  const [loadingCinematic, setLoadingCinematic] = useState(false);
+  const [cinematicFocus, setCinematicFocus] = useState<string>('random');
   const playbackTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Cleanup on unmount
@@ -179,6 +211,50 @@ export function ReplayViewer() {
     clearReplay();
   };
 
+  const handleFetchCinematicScript = async () => {
+    setLoadingCinematic(true);
+    try {
+      const API_BASE = 'http://localhost:3001/api';
+      const response = await fetch(`${API_BASE}/simulation/replay/cinematic?focusOn=${cinematicFocus}`);
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch cinematic script');
+      }
+
+      const script = await response.json();
+      setCinematicScript(script);
+      console.log('[ReplayViewer] Loaded cinematic script:', script);
+    } catch (error) {
+      console.error('Error fetching cinematic script:', error);
+      alert('Failed to load cinematic script. Make sure a simulation is running.');
+    } finally {
+      setLoadingCinematic(false);
+    }
+  };
+
+  const handleToggleCinematicMode = () => {
+    if (!cinematicMode && !cinematicScript) {
+      // Need to fetch script first
+      handleFetchCinematicScript();
+    }
+    setCinematicMode(!cinematicMode);
+  };
+
+  // Get current highlight for the current turn
+  const getCurrentHighlight = (): HighlightSequence | null => {
+    if (!cinematicScript || !cinematicMode || !replay) return null;
+
+    const currentTurn = replay.frames[currentIndex]?.turn || 0;
+    const highlights = cinematicScript.highlights.filter(h => {
+      const duration = h.duration || 3;
+      return currentTurn >= h.turn && currentTurn < h.turn + duration;
+    });
+
+    return highlights.length > 0 ? highlights[highlights.length - 1] : null;
+  };
+
+  const currentHighlight = getCurrentHighlight();
+
   const progress = replay.frames.length > 0
     ? (currentIndex / (replay.frames.length - 1)) * 100
     : 0;
@@ -318,6 +394,65 @@ export function ReplayViewer() {
             {speed}x
           </button>
         ))}
+      </div>
+
+      {/* Cinematic controls */}
+      <div className="mt-3 pt-3 border-t border-gray-700">
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            onClick={handleToggleCinematicMode}
+            disabled={loadingCinematic}
+            className={`px-3 py-2 rounded font-semibold ${
+              cinematicMode
+                ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                : 'bg-gray-700 hover:bg-gray-600 text-white'
+            } disabled:bg-gray-800 disabled:text-gray-600`}
+          >
+            {loadingCinematic ? '⏳ Loading...' : cinematicMode ? '🎬 Cinematic ON' : '🎥 Cinematic OFF'}
+          </button>
+
+          {!cinematicScript && !loadingCinematic && (
+            <>
+              <span className="text-sm text-gray-400">Focus:</span>
+              <select
+                value={cinematicFocus}
+                onChange={(e) => setCinematicFocus(e.target.value)}
+                className="px-2 py-1 text-sm bg-gray-700 text-white rounded border border-gray-600"
+              >
+                <option value="random">Random</option>
+                <option value="wars">Wars</option>
+                <option value="alliances">Alliances</option>
+                <option value="evolution">Evolution</option>
+                <option value="religion">Religion</option>
+              </select>
+            </>
+          )}
+
+          {cinematicScript && (
+            <span className="text-sm text-gray-400">
+              {cinematicScript.cameraPath.length} keyframes, {cinematicScript.highlights.length} highlights
+              {cinematicScript.metadata?.focusMode && ` (${cinematicScript.metadata.focusMode})`}
+            </span>
+          )}
+        </div>
+
+        {cinematicMode && currentHighlight && (
+          <div className="bg-purple-900/30 border border-purple-500/50 rounded p-2">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">{currentHighlight.label}</span>
+              {currentHighlight.agentIds && currentHighlight.agentIds.length > 0 && (
+                <span className="text-xs text-gray-400">
+                  ({currentHighlight.agentIds.length} agents)
+                </span>
+              )}
+            </div>
+            {currentHighlight.worldLocation && (
+              <div className="text-xs text-gray-400 mt-1">
+                Location: ({currentHighlight.worldLocation.x}, {currentHighlight.worldLocation.y})
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Frame metadata */}

@@ -387,6 +387,59 @@ app.get('/api/simulation/state', (req, res) => {
 });
 
 /**
+ * GET /api/simulation/replay
+ * Get the current simulation replay
+ */
+app.get('/api/simulation/replay', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const replay = engine.getReplay();
+    res.json({ replay });
+  } catch (error: any) {
+    console.error('Error fetching replay:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/simulation/replay/cinematic
+ * Get cinematic camera path for the current simulation replay
+ */
+app.get('/api/simulation/replay/cinematic', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const { CinematicReplay } = require('./logging');
+    const replay = engine.getReplay();
+
+    // Get focus option from query params
+    const focusOn = (req.query.focusOn as string) || 'random';
+    const validFocusOptions = ['wars', 'alliances', 'evolution', 'religion', 'random'];
+
+    if (!validFocusOptions.includes(focusOn)) {
+      return res.status(400).json({
+        error: `Invalid focusOn parameter. Must be one of: ${validFocusOptions.join(', ')}`,
+      });
+    }
+
+    // Generate cinematic script
+    const script = CinematicReplay.generateScriptFromReplay(replay, {
+      focusOn: focusOn as any,
+    });
+
+    res.json(script);
+  } catch (error: any) {
+    console.error('Error generating cinematic script:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * GET /api/presets
  * Get all available presets
  */
