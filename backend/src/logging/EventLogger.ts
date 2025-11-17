@@ -204,6 +204,8 @@ export class EventLogger {
       dialogue: '💬',
       state_update: '🔄',
       event: '🌟',
+      religion_born: '🙏',
+      ritual_performed: '✨',
     };
 
     return emojiMap[type] || '•';

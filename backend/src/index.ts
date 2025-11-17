@@ -1373,6 +1373,46 @@ app.get('/api/civilization/laws', (req, res) => {
 });
 
 /**
+ * GET /api/civilization/beliefs
+ * Get all beliefs in the system
+ */
+app.get('/api/civilization/beliefs', (req, res) => {
+  try {
+    if (!engine) {
+      return res.json({ beliefs: [] });
+    }
+
+    const beliefSystem = engine.getBeliefSystem();
+    const beliefs = beliefSystem.getAllBeliefs();
+
+    res.json({ beliefs });
+  } catch (error: any) {
+    console.error('Error fetching beliefs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/rituals
+ * Get all rituals in the system
+ */
+app.get('/api/civilization/rituals', (req, res) => {
+  try {
+    if (!engine) {
+      return res.json({ rituals: [] });
+    }
+
+    const beliefSystem = engine.getBeliefSystem();
+    const rituals = beliefSystem.getAllRituals();
+
+    res.json({ rituals });
+  } catch (error: any) {
+    console.error('Error fetching rituals:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/civilization/factions/debug-seed
  * Debug endpoint to seed initial factions for testing
  */

@@ -8,6 +8,7 @@ import { SocialGraph } from '../agents/SocialGraph';
 import { AllianceManager } from '../agents/AllianceManager';
 import { Faction } from '../civilization/FactionManager';
 import { Law, LawViolation } from '../civilization/LawSystem';
+import { BeliefSystem } from '../civilization/BeliefSystem';
 
 // Analytics data structures
 export interface HeatmapCell {
@@ -169,6 +170,23 @@ export interface CivilizationAnalytics {
   factionStability: FactionStabilityMap;
   conflictRates: InterFactionConflictRates;
   lawCompliance: LawComplianceData;
+}
+
+export interface ReligiousMetrics {
+  beliefCount: number;
+  totalAdherents: number;
+  beliefsByFaction: {
+    [factionId: string]: number; // Number of beliefs associated with this faction
+  };
+  adherentsByBelief: {
+    [beliefId: string]: {
+      beliefName: string;
+      adherentCount: number;
+      zeal: number;
+      factionCount: number;
+    };
+  };
+  averageZeal: number;
 }
 
 export class AnalyticsEngine {
@@ -898,5 +916,69 @@ export class AnalyticsEngine {
     });
 
     return complianceData;
+  }
+
+  /**
+   * Compute religious metrics
+   * Analyzes beliefs, adherence, and zeal across the simulation
+   */
+  computeReligiousMetrics(beliefSystem: BeliefSystem, factions: Faction[]): ReligiousMetrics {
+    const beliefs = beliefSystem.getAllBeliefs();
+    const beliefCount = beliefs.length;
+
+    // Build faction membership counts
+    const factionMemberCounts = new Map<string, number>();
+    factions.forEach((faction) => {
+      factionMemberCounts.set(faction.id, faction.members.size);
+    });
+
+    // Count beliefs by faction
+    const beliefsByFaction: { [factionId: string]: number } = {};
+    let totalAdherents = 0;
+    let totalZeal = 0;
+
+    // Adherents by belief
+    const adherentsByBelief: {
+      [beliefId: string]: {
+        beliefName: string;
+        adherentCount: number;
+        zeal: number;
+        factionCount: number;
+      };
+    } = {};
+
+    beliefs.forEach((belief) => {
+      const factionCount = belief.associatedFactions.length;
+
+      // Count total adherents (sum of all faction members)
+      let adherentCount = 0;
+      belief.associatedFactions.forEach((factionId) => {
+        const memberCount = factionMemberCounts.get(factionId) || 0;
+        adherentCount += memberCount;
+
+        // Track beliefs per faction
+        beliefsByFaction[factionId] = (beliefsByFaction[factionId] || 0) + 1;
+      });
+
+      totalAdherents += adherentCount;
+      totalZeal += belief.zeal;
+
+      adherentsByBelief[belief.id] = {
+        beliefName: belief.name,
+        adherentCount,
+        zeal: belief.zeal,
+        factionCount,
+      };
+    });
+
+    const averageZeal = beliefCount > 0 ? totalZeal / beliefCount : 0;
+
+    return {
+      beliefCount,
+      totalAdherents,
+      beliefsByFaction,
+      adherentsByBelief,
+      averageZeal,
+    };
   }
 }

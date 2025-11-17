@@ -138,7 +138,7 @@ export interface EventLog {
   id: string;
   timestamp: number;
   turn: number;
-  type: 'action' | 'interaction' | 'resource_change' | 'dialogue' | 'state_update' | 'event';
+  type: 'action' | 'interaction' | 'resource_change' | 'dialogue' | 'state_update' | 'event' | 'religion_born' | 'ritual_performed';
   description: string;
   agentIds: string[];
   metadata?: Record<string, any>;

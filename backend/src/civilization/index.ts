@@ -1,6 +1,6 @@
 /**
  * Civilization module exports
- * Higher-level social structures: factions and laws
+ * Higher-level social structures: factions, laws, and beliefs
  */
 
 export {
@@ -14,3 +14,12 @@ export {
   LawViolation,
   LawSystem,
 } from './LawSystem';
+
+export {
+  Belief,
+  Ritual,
+  RitualTriggerCondition,
+  BeliefSystem,
+  getBeliefSystem,
+  setBeliefSystem,
+} from './BeliefSystem';

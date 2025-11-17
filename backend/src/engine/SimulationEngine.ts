@@ -14,6 +14,8 @@ import { PlanningEngine } from '../agents/planning/PlanningEngine';
 import { WorldEventsManager } from '../world/events/WorldEvents';
 import { ReplayRecorder } from '../logging/ReplayRecorder';
 import { getStanBridge } from '../stan';
+import { BeliefSystem, Belief, Ritual } from '../civilization/BeliefSystem';
+import { FactionManager } from '../civilization/FactionManager';
 import {
   Action,
   ActionType,
@@ -32,6 +34,7 @@ import {
   AgentStats,
   Replay,
   Tile,
+  EventLog,
 } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -57,6 +60,8 @@ export class SimulationEngine {
   private planningEngine: PlanningEngine;
   private worldEventsManager: WorldEventsManager;
   private replayRecorder: ReplayRecorder;
+  private beliefSystem: BeliefSystem;
+  private factionManager: FactionManager | null;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -85,6 +90,10 @@ export class SimulationEngine {
       maxActiveEvents: 3,
       allowCatastrophicEvents: true,
     });
+
+    // Initialize belief system for emergent religions
+    this.beliefSystem = new BeliefSystem(0.7); // 0.7 = event drama threshold
+    this.factionManager = null; // Will be set externally if factions are enabled
 
     this.config = {
       turnDuration: config.turnDuration,
@@ -294,6 +303,9 @@ export class SimulationEngine {
 
     // Phase 9: Apply trait drift
     this.applyTraitDrift();
+
+    // Phase 10: Evaluate beliefs and perform rituals
+    this.evaluateBeliefsAndRituals();
 
     this.logger.logEvent({
       type: 'state_update',
@@ -1978,5 +1990,235 @@ export class SimulationEngine {
    */
   getReplayRecorder(): ReplayRecorder {
     return this.replayRecorder;
+  }
+
+  /**
+   * Set faction manager (for belief system integration)
+   */
+  setFactionManager(factionManager: FactionManager): void {
+    this.factionManager = factionManager;
+  }
+
+  /**
+   * Get belief system
+   */
+  getBeliefSystem(): BeliefSystem {
+    return this.beliefSystem;
+  }
+
+  /**
+   * Phase 10: Evaluate beliefs and perform rituals
+   * Checks for dramatic events that could spawn new beliefs
+   * Evaluates ritual triggers and applies effects
+   */
+  private evaluateBeliefsAndRituals(): void {
+    // Skip if no factions (beliefs require faction context)
+    if (!this.factionManager) {
+      return;
+    }
+
+    // Check for dramatic events that could spawn beliefs
+    this.checkForBeliefSpawningEvents();
+
+    // Evaluate and perform rituals
+    this.evaluateRitualTriggers();
+  }
+
+  /**
+   * Check recent events for belief-spawning drama
+   */
+  private checkForBeliefSpawningEvents(): void {
+    if (!this.factionManager) return;
+
+    const recentLogs = this.logger.getLogsForTurn(this.currentTurn);
+    const factions = this.factionManager.listFactions();
+
+    // Check for dramatic events
+    for (const log of recentLogs) {
+      const isDramatic = this.isEventDramatic(log);
+
+      if (isDramatic) {
+        // Find factions involved in the event
+        const involvedFactions = factions.filter(faction =>
+          log.agentIds.some(agentId => faction.members.has(agentId))
+        );
+
+        if (involvedFactions.length > 0) {
+          // Spawn a new belief!
+          const belief = this.beliefSystem.createBeliefFromEvent(
+            log,
+            involvedFactions
+          );
+
+          // Log the religious event
+          this.logger.logEvent({
+            type: 'religion_born',
+            description: `A new belief "${belief.name}" has emerged among ${involvedFactions.length} faction(s)`,
+            agentIds: log.agentIds,
+            metadata: {
+              beliefId: belief.id,
+              beliefName: belief.name,
+              factionIds: involvedFactions.map(f => f.id),
+              originEvent: log.type,
+              zeal: belief.zeal,
+            },
+          });
+
+          // Create default rituals for the new belief
+          this.createDefaultRituals(belief);
+        }
+      }
+    }
+  }
+
+  /**
+   * Determine if an event is dramatic enough to spawn a belief
+   */
+  private isEventDramatic(log: EventLog): boolean {
+    // Multiple agents involved = more dramatic
+    if (log.agentIds.length >= 3) return true;
+
+    // Specific event types are dramatic
+    const dramaticTypes = ['death', 'disaster', 'alliance', 'conflict', 'catastrophe'];
+    if (dramaticTypes.some(type => log.type.toLowerCase().includes(type))) {
+      return true;
+    }
+
+    // Check metadata for dramatic indicators
+    if (log.metadata) {
+      if (log.metadata.severity === 'high' || log.metadata.severity === 'critical') {
+        return true;
+      }
+      if (log.metadata.casualties && log.metadata.casualties > 1) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Create default rituals for a new belief
+   */
+  private createDefaultRituals(belief: Belief): void {
+    // Death ritual (if belief has death-related tenets)
+    if (belief.name.toLowerCase().includes('vigil') || belief.name.toLowerCase().includes('death')) {
+      this.beliefSystem.registerRitual(belief.id, {
+        name: 'Remembrance Ceremony',
+        beliefId: belief.id,
+        triggerCondition: 'DEATH_EVENT',
+        actions: ['Gather in circle', 'Share memories', 'Offer resources to the fallen'],
+        mechanicalEffects: {
+          moraleBoost: 5,
+          cohesionBoost: 0.05,
+        },
+        triggerData: { cooldown: 3 },
+      });
+    }
+
+    // Alliance ritual
+    if (belief.name.toLowerCase().includes('united') || belief.name.toLowerCase().includes('path')) {
+      this.beliefSystem.registerRitual(belief.id, {
+        name: 'Unity Oath',
+        beliefId: belief.id,
+        triggerCondition: 'ALLIANCE_FORMED',
+        actions: ['Exchange symbols', 'Vow cooperation', 'Celebrate together'],
+        mechanicalEffects: {
+          cooperationDelta: 5,
+          cohesionBoost: 0.1,
+        },
+        triggerData: { cooldown: 5 },
+      });
+    }
+
+    // Disaster ritual
+    if (belief.name.toLowerCase().includes('tempest') || belief.name.toLowerCase().includes('storm')) {
+      this.beliefSystem.registerRitual(belief.id, {
+        name: 'Storm Dance',
+        beliefId: belief.id,
+        triggerCondition: 'DISASTER',
+        actions: ['Dance wildly', 'Embrace chaos', 'Scatter resources'],
+        mechanicalEffects: {
+          energyBoost: 10,
+          aggressionDelta: -5,
+        },
+        triggerData: { cooldown: 4 },
+      });
+    }
+  }
+
+  /**
+   * Evaluate ritual triggers and perform rituals
+   */
+  private evaluateRitualTriggers(): void {
+    if (!this.factionManager) return;
+
+    const factions = this.factionManager.listFactions();
+    const recentLogs = this.logger.getLogsForTurn(this.currentTurn);
+
+    // Count recent dramatic events
+    const recentDeaths = recentLogs.filter(l =>
+      l.type === 'action' && l.description.toLowerCase().includes('death')
+    ).length;
+
+    const alliancesFormed = recentLogs.filter(l =>
+      l.type === 'interaction' && l.description.toLowerCase().includes('alliance')
+    ).length;
+
+    const disasters = recentLogs.filter(l => l.type === 'event').length;
+
+    // Build world state summary
+    const worldState = {
+      turn: this.currentTurn,
+      totalResources: this.calculateTotalWorldResources(),
+      recentDeaths,
+      alliancesFormed,
+      disasters,
+    };
+
+    // Check each faction for triggered rituals
+    for (const faction of factions) {
+      const rituals = this.beliefSystem.getRitualsForFaction(faction.id);
+      const triggeredRituals = this.beliefSystem.evaluateRitualTriggers(
+        worldState,
+        recentLogs
+      );
+
+      // Perform triggered rituals
+      for (const ritual of triggeredRituals) {
+        // Only perform if ritual belongs to this faction
+        if (rituals.some(r => r.id === ritual.id)) {
+          this.performRitual(ritual, faction);
+        }
+      }
+    }
+  }
+
+  /**
+   * Perform a ritual for a faction
+   */
+  private performRitual(ritual: Ritual, faction: any): void {
+    const agents = Array.from(this.agents.values());
+
+    // Apply ritual effects
+    this.beliefSystem.applyRitualEffects(ritual, faction, agents);
+
+    // Log the ritual performance
+    const participantIds = Array.from(faction.members);
+
+    this.logger.logEvent({
+      type: 'ritual_performed',
+      description: `Faction ${faction.name} performed the "${ritual.name}" ritual`,
+      agentIds: participantIds,
+      metadata: {
+        ritualId: ritual.id,
+        ritualName: ritual.name,
+        factionId: faction.id,
+        effects: ritual.mechanicalEffects,
+        actions: ritual.actions,
+      },
+    });
+
+    console.log(`[SimulationEngine] Ritual "${ritual.name}" performed by faction ${faction.name}`);
   }
 }
