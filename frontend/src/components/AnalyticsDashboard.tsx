@@ -82,15 +82,38 @@ interface SocialGraphData {
   clusters: string[][];
 }
 
+interface CivilizationAnalytics {
+  factions: Array<{
+    id: string;
+    name: string;
+    members: string[];
+    stability: number;
+    memberCount: number;
+    cohesion: number;
+    resources: { food: number; water: number; materials: number };
+    laws: string[];
+  }>;
+  factionStability: { [factionId: string]: number };
+  conflictRates: { [pairKey: string]: number };
+  lawCompliance: {
+    [lawId: string]: {
+      violations: number;
+      totalRelevant: number;
+      complianceRate: number;
+    };
+  };
+}
+
 const API_BASE = 'http://localhost:3001/api';
 
 export function AnalyticsDashboard() {
   const simulation = useStore((state) => state.simulation);
-  const [activeTab, setActiveTab] = useState<'overview' | 'heatmaps' | 'graph'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'heatmaps' | 'graph' | 'civilization'>('overview');
   const [metrics, setMetrics] = useState<AnalyticsMetrics | null>(null);
   const [aggressionHeatmap, setAggressionHeatmap] = useState<Heatmap | null>(null);
   const [cooperationHeatmap, setCooperationHeatmap] = useState<Heatmap | null>(null);
   const [socialGraph, setSocialGraph] = useState<SocialGraphData | null>(null);
+  const [civilizationData, setCivilizationData] = useState<CivilizationAnalytics | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Fetch analytics data
@@ -125,6 +148,15 @@ export function AnalyticsDashboard() {
         if (graphRes.ok) {
           const data = await graphRes.json();
           setSocialGraph(data.graph);
+        }
+      }
+
+      // Fetch civilization data if on civilization tab
+      if (activeTab === 'civilization') {
+        const civRes = await fetch(`${API_BASE}/analytics/civilization`);
+        if (civRes.ok) {
+          const data = await civRes.json();
+          setCivilizationData(data);
         }
       }
     } catch (error) {
@@ -195,6 +227,16 @@ export function AnalyticsDashboard() {
           >
             Social Graph
           </button>
+          <button
+            onClick={() => setActiveTab('civilization')}
+            className={`px-4 py-2 rounded ${
+              activeTab === 'civilization'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            Civilization
+          </button>
         </div>
       </div>
 
@@ -212,6 +254,10 @@ export function AnalyticsDashboard() {
         )}
         {activeTab === 'graph' && (
           <SocialGraphTab socialGraph={socialGraph} loading={loading} />
+        )}
+
+        {activeTab === 'civilization' && (
+          <CivilizationTab civilizationData={civilizationData} loading={loading} />
         )}
       </div>
     </div>
@@ -386,6 +432,198 @@ function SocialGraphTab({
               </div>
             </div>
           ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Civilization Tab Component
+function CivilizationTab({
+  civilizationData,
+  loading,
+}: {
+  civilizationData: CivilizationAnalytics | null;
+  loading: boolean;
+}) {
+  if (loading) {
+    return <div className="text-gray-400">Loading civilization data...</div>;
+  }
+
+  if (!civilizationData || civilizationData.factions.length === 0) {
+    return (
+      <div className="text-gray-400">
+        No factions exist. Use the Civilization endpoints to create factions.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <h3 className="text-xl font-bold text-white">Civilization Analytics</h3>
+
+      {/* Factions Overview */}
+      <div>
+        <h4 className="text-lg font-bold text-white mb-3">Factions</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {civilizationData.factions.map((faction) => (
+            <div key={faction.id} className="bg-gray-800 rounded p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h5 className="font-bold text-white">{faction.name}</h5>
+                <span className="text-xs text-gray-400">{faction.memberCount} members</span>
+              </div>
+
+              {/* Stability Bar */}
+              <div className="mb-3">
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-gray-400">Stability</span>
+                  <span className="text-white">{(faction.stability * 100).toFixed(1)}%</span>
+                </div>
+                <div className="w-full bg-gray-700 rounded h-2">
+                  <div
+                    className={`h-2 rounded ${
+                      faction.stability > 0.7
+                        ? 'bg-green-500'
+                        : faction.stability > 0.4
+                        ? 'bg-yellow-500'
+                        : 'bg-red-500'
+                    }`}
+                    style={{ width: `${faction.stability * 100}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Resources */}
+              <div className="grid grid-cols-3 gap-2 text-xs mb-3">
+                <div>
+                  <span className="text-gray-400">Food:</span>
+                  <span className="text-white ml-1">{faction.resources.food}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400">Water:</span>
+                  <span className="text-white ml-1">{faction.resources.water}</span>
+                </div>
+                <div>
+                  <span className="text-gray-400">Materials:</span>
+                  <span className="text-white ml-1">{faction.resources.materials}</span>
+                </div>
+              </div>
+
+              {/* Laws */}
+              <div className="text-xs">
+                <span className="text-gray-400">Laws:</span>
+                <span className="text-white ml-1">{faction.laws.length}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Faction Stability Chart */}
+      <div>
+        <h4 className="text-lg font-bold text-white mb-3">Faction Stability</h4>
+        <div className="bg-gray-800 rounded p-4">
+          {civilizationData.factions.map((faction) => (
+            <div key={faction.id} className="mb-3">
+              <div className="flex justify-between text-sm mb-1">
+                <span className="text-white">{faction.name}</span>
+                <span className="text-gray-400">{(faction.stability * 100).toFixed(1)}%</span>
+              </div>
+              <div className="w-full bg-gray-700 rounded h-3">
+                <div
+                  className={`h-3 rounded transition-all ${
+                    faction.stability > 0.7
+                      ? 'bg-green-500'
+                      : faction.stability > 0.4
+                      ? 'bg-yellow-500'
+                      : 'bg-red-500'
+                  }`}
+                  style={{ width: `${faction.stability * 100}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Inter-Faction Conflict Rates */}
+      <div>
+        <h4 className="text-lg font-bold text-white mb-3">Inter-Faction Conflict Rates</h4>
+        <div className="bg-gray-800 rounded p-4">
+          {Object.keys(civilizationData.conflictRates).length > 0 ? (
+            <div className="space-y-2">
+              {Object.entries(civilizationData.conflictRates).map(([pairKey, rate]) => {
+                const [faction1, faction2] = pairKey.split('|');
+                return (
+                  <div key={pairKey} className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">
+                      {faction1} ↔ {faction2}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <div className="w-32 bg-gray-700 rounded h-2">
+                        <div
+                          className={`h-2 rounded ${
+                            rate > 0.5 ? 'bg-red-500' : rate > 0.2 ? 'bg-yellow-500' : 'bg-green-500'
+                          }`}
+                          style={{ width: `${rate * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-white w-12 text-right">
+                        {(rate * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-gray-400 text-sm">No inter-faction interactions recorded yet</div>
+          )}
+        </div>
+      </div>
+
+      {/* Law Compliance */}
+      <div>
+        <h4 className="text-lg font-bold text-white mb-3">Law Compliance Rates</h4>
+        <div className="bg-gray-800 rounded overflow-hidden">
+          {Object.keys(civilizationData.lawCompliance).length > 0 ? (
+            <table className="w-full">
+              <thead className="bg-gray-700">
+                <tr>
+                  <th className="px-4 py-2 text-left text-xs text-gray-300">Law ID</th>
+                  <th className="px-4 py-2 text-right text-xs text-gray-300">Violations</th>
+                  <th className="px-4 py-2 text-right text-xs text-gray-300">Total Relevant</th>
+                  <th className="px-4 py-2 text-right text-xs text-gray-300">Compliance Rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(civilizationData.lawCompliance).map(([lawId, data]) => (
+                  <tr key={lawId} className="border-t border-gray-700">
+                    <td className="px-4 py-2 text-sm text-white">{lawId}</td>
+                    <td className="px-4 py-2 text-sm text-right text-red-400">{data.violations}</td>
+                    <td className="px-4 py-2 text-sm text-right text-gray-400">
+                      {data.totalRelevant}
+                    </td>
+                    <td className="px-4 py-2 text-sm text-right">
+                      <span
+                        className={`font-semibold ${
+                          data.complianceRate > 80
+                            ? 'text-green-400'
+                            : data.complianceRate > 50
+                            ? 'text-yellow-400'
+                            : 'text-red-400'
+                        }`}
+                      >
+                        {data.complianceRate.toFixed(1)}%
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="p-4 text-gray-400 text-sm">No law compliance data available yet</div>
+          )}
         </div>
       </div>
     </div>
