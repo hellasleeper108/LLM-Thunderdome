@@ -15,6 +15,7 @@ import {
   Inventory,
 } from '../schemas/types';
 import { SocialGraph } from '../agents/SocialGraph';
+import { getStanBridge } from '../stan';
 
 export class NegotiationEngine {
   private negotiationHistory: Map<string, NegotiationOffer[]>;
@@ -551,5 +552,52 @@ export class NegotiationEngine {
    */
   getSocialGraph(): SocialGraph {
     return this.socialGraph;
+  }
+
+  /**
+   * Send STAN negotiation event
+   * Reports negotiation outcomes to external STAN overseer
+   */
+  sendStanNegotiationEvent(
+    offer: NegotiationOffer,
+    outcome: NegotiationOutcome,
+    initiator: AgentState,
+    target: AgentState
+  ): void {
+    try {
+      const stan = getStanBridge();
+
+      const event = stan.createEvent('NEGOTIATION', {
+        protocol: offer.protocol,
+        initiator: {
+          id: initiator.id,
+          name: initiator.name,
+          personality: initiator.personality.name,
+        },
+        target: {
+          id: target.id,
+          name: target.name,
+          personality: target.personality.name,
+        },
+        offer: {
+          offering: offer.offering,
+          requesting: offer.requesting,
+          terms: offer.terms,
+        },
+        outcome: {
+          success: outcome.success,
+          resourceTransfers: outcome.effects.resourceTransfers,
+          allianceFormed: outcome.effects.allianceFormed,
+          allianceBroken: outcome.effects.allianceBroken,
+          threatIssued: outcome.effects.threatIssued,
+          aidProvided: outcome.effects.aidProvided,
+        },
+        consequences: outcome.consequences,
+      });
+
+      stan.sendEvent(event);
+    } catch (error) {
+      console.error('[NegotiationEngine] Failed to send STAN negotiation event:', error);
+    }
   }
 }

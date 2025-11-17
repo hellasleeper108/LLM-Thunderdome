@@ -13,6 +13,7 @@ import { NegotiationEngine } from './NegotiationEngine';
 import { PlanningEngine } from '../agents/planning/PlanningEngine';
 import { WorldEventsManager } from '../world/events/WorldEvents';
 import { ReplayRecorder } from '../logging/ReplayRecorder';
+import { getStanBridge } from '../stan';
 import {
   Action,
   ActionType,
@@ -299,6 +300,9 @@ export class SimulationEngine {
       description: `Turn ${this.currentTurn} completed`,
       agentIds: [],
     });
+
+    // Send STAN turn summary event
+    this.sendStanTurnSummary();
 
     // Record turn for replay
     this.recordTurnToReplay();
@@ -1043,6 +1047,9 @@ export class SimulationEngine {
         agent.receiveMessage(counterMsg);
       }
     }
+
+    // Send STAN negotiation event
+    this.negotiationEngine.sendStanNegotiationEvent(offer, outcome, negotiator, targetState);
 
     // Log negotiation event
     this.logger.logEvent({
@@ -1845,6 +1852,111 @@ export class SimulationEngine {
    */
   getTraitDrift(): TraitDrift {
     return this.traitDrift;
+  }
+
+  /**
+   * Send STAN turn summary event
+   * Sends a summary of the turn to the external STAN overseer system
+   */
+  private sendStanTurnSummary(): void {
+    try {
+      const stan = getStanBridge();
+      const state = this.getState();
+
+      // Calculate key metrics for the turn
+      const aliveAgents = state.agents.filter(a => a.isAlive);
+      const deadAgents = state.agents.filter(a => !a.isAlive);
+
+      // Get recent key events from action results
+      const attacks = this.actionResults.filter(r => r.action.type === ActionType.ATTACK);
+      const negotiations = this.actionResults.filter(
+        r => r.action.type === ActionType.NEGOTIATE
+      );
+      const allianceChanges = this.actionResults.filter(
+        r => r.action.type === ActionType.FORM_ALLIANCE || r.action.type === ActionType.BREAK_ALLIANCE
+      );
+
+      // Build turn summary payload
+      const event = stan.createEvent('TURN_SUMMARY', {
+        turn: this.currentTurn,
+        status: this.status,
+        agentCount: {
+          total: state.agents.length,
+          alive: aliveAgents.length,
+          dead: deadAgents.length,
+        },
+        turnEvents: {
+          totalActions: this.actionResults.length,
+          attacks: attacks.length,
+          negotiations: negotiations.length,
+          allianceChanges: allianceChanges.length,
+          messagesExchanged: state.messages.length,
+        },
+        worldState: {
+          totalResources: this.calculateTotalWorldResources(),
+          activeEvents: this.worldEventsManager?.getActiveEvents().length || 0,
+        },
+        socialMetrics: {
+          activeAlliances: this.allianceManager.getAlliances().length,
+          avgTrust: this.calculateAverageTrust(),
+          avgFear: this.calculateAverageFear(),
+        },
+        topAgents: aliveAgents
+          .sort((a, b) => b.health - a.health)
+          .slice(0, 3)
+          .map(a => ({
+            id: a.id,
+            name: a.name,
+            health: a.health,
+            personality: a.personality.name,
+          })),
+      });
+
+      stan.sendEvent(event);
+    } catch (error) {
+      // Don't let STAN errors break the simulation
+      console.error('[SimulationEngine] Failed to send STAN turn summary:', error);
+    }
+  }
+
+  /**
+   * Calculate total resources in the world
+   */
+  private calculateTotalWorldResources(): number {
+    const allTiles = this.world.getAllTiles();
+    let total = 0;
+
+    for (const row of allTiles) {
+      for (const tile of row) {
+        if (tile.type.startsWith('resource_') && tile.value) {
+          total += tile.value;
+        }
+      }
+    }
+
+    return total;
+  }
+
+  /**
+   * Calculate average trust across all agents
+   */
+  private calculateAverageTrust(): number {
+    const relationships = this.socialGraph.getAllRelationshipData();
+    if (relationships.length === 0) return 0;
+
+    const totalTrust = relationships.reduce((sum, rel) => sum + rel.trust, 0);
+    return totalTrust / relationships.length;
+  }
+
+  /**
+   * Calculate average fear across all agents
+   */
+  private calculateAverageFear(): number {
+    const relationships = this.socialGraph.getAllRelationshipData();
+    if (relationships.length === 0) return 0;
+
+    const totalFear = relationships.reduce((sum, rel) => sum + rel.fear, 0);
+    return totalFear / relationships.length;
   }
 
   /**

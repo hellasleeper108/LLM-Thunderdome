@@ -18,6 +18,7 @@ import { Position, FitnessCriteria, AgentGenome } from './schemas/types';
 import { AnalyticsEngine, PredictionEngine, EarlyStateSnapshot, OutcomePrediction } from './analytics';
 import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
 import { FactionManager, LawSystem, LawType } from './civilization';
+import { initializeStanBridge, getStanBridge } from './stan';
 
 const app = express();
 const server = createServer(app);
@@ -870,6 +871,91 @@ app.post('/api/analytics/predict-outcome', (req, res) => {
 });
 
 /**
+ * GET /api/stan/config
+ * Get current STAN configuration
+ */
+app.get('/api/stan/config', (req, res) => {
+  try {
+    const stan = getStanBridge();
+    const config = stan.getConfig();
+    const stats = stan.getStats();
+
+    res.json({
+      config,
+      stats,
+    });
+  } catch (error: any) {
+    console.error('Error getting STAN config:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/stan/config
+ * Update STAN configuration
+ */
+app.post('/api/stan/config', (req, res) => {
+  try {
+    const stan = getStanBridge();
+    const { enabled, webhookUrl, apiKey, maxEventsPerSecond } = req.body;
+
+    // Validate inputs
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be a boolean' });
+    }
+
+    if (webhookUrl !== undefined && typeof webhookUrl !== 'string') {
+      return res.status(400).json({ error: 'webhookUrl must be a string' });
+    }
+
+    if (maxEventsPerSecond !== undefined) {
+      const rate = Number(maxEventsPerSecond);
+      if (isNaN(rate) || rate < 1 || rate > 100) {
+        return res.status(400).json({ error: 'maxEventsPerSecond must be between 1 and 100' });
+      }
+    }
+
+    // Update configuration
+    const updates: any = {};
+    if (enabled !== undefined) updates.enabled = enabled;
+    if (webhookUrl !== undefined) updates.webhookUrl = webhookUrl;
+    if (apiKey !== undefined) updates.apiKey = apiKey;
+    if (maxEventsPerSecond !== undefined) updates.maxEventsPerSecond = Number(maxEventsPerSecond);
+
+    stan.updateConfig(updates);
+
+    // If enabled was changed, update the bridge state
+    if (enabled !== undefined) {
+      stan.setEnabled(enabled);
+    }
+
+    res.json({
+      success: true,
+      config: stan.getConfig(),
+    });
+  } catch (error: any) {
+    console.error('Error updating STAN config:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/stats
+ * Get STAN bridge statistics
+ */
+app.get('/api/stan/stats', (req, res) => {
+  try {
+    const stan = getStanBridge();
+    const stats = stan.getStats();
+
+    res.json({ stats });
+  } catch (error: any) {
+    console.error('Error getting STAN stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/cluster/start
  * Start a cluster of simulations running in parallel
  */
@@ -1254,6 +1340,15 @@ app.post('/api/civilization/factions/debug-seed', (req, res) => {
     console.error('Error seeding factions:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Initialize STAN bridge
+console.log('[Server] Initializing STAN bridge...');
+initializeStanBridge();
+const stanBridge = getStanBridge();
+console.log('[Server] STAN bridge initialized:', {
+  enabled: stanBridge.getConfig().enabled,
+  hasWebhook: !!stanBridge.getConfig().webhookUrl,
 });
 
 // Start server

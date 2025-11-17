@@ -14,6 +14,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { AgentState, Replay, FitnessCriteria, AgentGenome } from '../schemas/types';
 import { EvolutionEngine, AgentStats as EvolutionAgentStats } from '../evolution/EvolutionEngine';
 import { personalityFromGenome } from '../agents/personalities';
+import { getStanBridge } from '../stan';
 
 export interface ClusterConfig {
   simulationCount: number;
@@ -642,6 +643,36 @@ export class SimulationCluster {
     );
 
     console.log(`[Evolution] Generated ${nextGeneration.length} genomes for next generation`);
+
+    // Send STAN cluster summary event
+    try {
+      const stan = getStanBridge();
+      const event = stan.createEvent('CLUSTER_SUMMARY', {
+        simulationCount: this.instances.size,
+        completedSimulations: this.outcomes.length,
+        evolutionGeneration: 1, // This could be tracked if needed
+        fitnessStatistics: {
+          count: Object.keys(fitnessScores).length,
+          min: Math.min(...Object.values(fitnessScores)),
+          max: Math.max(...Object.values(fitnessScores)),
+          average: generationResult.averageFitness,
+        },
+        topGenomes: {
+          count: generationResult.topGenomes.length,
+          selected: topK,
+        },
+        nextGeneration: {
+          populationSize: nextGeneration.length,
+          mutationRate: mutationRate,
+          eliteCount: Math.min(2, topK),
+        },
+        criteria: fitnessCriteria,
+      });
+
+      stan.sendEvent(event);
+    } catch (error) {
+      console.error('[SimulationCluster] Failed to send STAN cluster summary:', error);
+    }
 
     return nextGeneration;
   }
