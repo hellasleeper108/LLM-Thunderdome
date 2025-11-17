@@ -155,7 +155,7 @@ app.post('/api/simulation/create', (req, res) => {
           personality,
           position,
           goals,
-          { mock: true }
+          { useMock: true }
         );
 
         engine!.addAgent(agent);
@@ -175,7 +175,7 @@ app.post('/api/simulation/create', (req, res) => {
           personality,
           position,
           goals,
-          { mock: true }
+          { useMock: true }
         );
 
         engine!.addAgent(agent);
@@ -561,7 +561,7 @@ app.post('/api/agents/add', (req, res) => {
         strategy: strategy || 'gatherer',
       });
     } else {
-      agent = new LLMAgent(name, personality, position, goals, { mock: true });
+      agent = new LLMAgent(name, personality, position, goals, { useMock: true });
     }
 
     engine.addAgent(agent);
