@@ -13,7 +13,7 @@ import { EventLogger } from './logging';
 import { StateManager } from './state';
 import { LLMAgent, ScriptedAgent } from './agents';
 import { getPreset, getAllPresetNames, createGoalsFromPersonality } from './simulations';
-import { getPersonality, ALL_PERSONALITIES } from './agents/personalities';
+import { getPersonality, ALL_PERSONALITIES, personalityFromGenome } from './agents/personalities';
 import { Position, FitnessCriteria, AgentGenome } from './schemas/types';
 import { AnalyticsEngine } from './analytics';
 import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
@@ -135,8 +135,33 @@ app.post('/api/simulation/create', (req, res) => {
       visionRadius: 3,
     });
 
-    // Add agents from preset
-    if (finalConfig.agentPersonalities) {
+    // Add agents from initialGenomes or preset personalities
+    if (finalConfig.initialGenomes && finalConfig.initialGenomes.length > 0) {
+      // Use evolved genomes
+      console.log(`[Simulation] Creating agents from ${finalConfig.initialGenomes.length} evolved genomes`);
+
+      finalConfig.initialGenomes.forEach((genome: any, index: number) => {
+        const position: Position = {
+          x: Math.floor(Math.random() * (finalConfig.worldWidth || 20)),
+          y: Math.floor(Math.random() * (finalConfig.worldHeight || 20)),
+        };
+
+        // Convert genome to personality
+        const personality = personalityFromGenome(genome);
+        const goals = createGoalsFromPersonality(personality);
+
+        const agent = new LLMAgent(
+          `${personality.name} ${index + 1}`,
+          personality,
+          position,
+          goals,
+          { mock: true }
+        );
+
+        engine!.addAgent(agent);
+      });
+    } else if (finalConfig.agentPersonalities) {
+      // Use traditional personality templates
       finalConfig.agentPersonalities.forEach((personality: any, index: number) => {
         const position: Position = {
           x: Math.floor(Math.random() * (finalConfig.worldWidth || 20)),
@@ -894,6 +919,45 @@ app.post('/api/cluster/reset', (req, res) => {
 });
 
 /**
+ * GET /api/evolution/presets-support
+ * Get information about which presets support genome-based seeding
+ */
+app.get('/api/evolution/presets-support', (req, res) => {
+  try {
+    const presetNames = getAllPresetNames();
+    const presetsInfo = presetNames.map((presetName) => {
+      const preset = getPreset(presetName);
+      if (!preset) {
+        return null;
+      }
+
+      return {
+        name: preset.name,
+        description: preset.description,
+        supportsGenomes: true, // All presets now support genome-based seeding
+        expectedAgentCount: preset.agentPersonalities.length,
+        currentMode: preset.initialGenomes ? 'genome' : 'personality',
+        genomeCount: preset.initialGenomes?.length || 0,
+        worldDimensions: {
+          width: preset.worldWidth,
+          height: preset.worldHeight,
+        },
+        maxTurns: preset.maxTurns,
+      };
+    }).filter(Boolean);
+
+    res.json({
+      presets: presetsInfo,
+      totalPresets: presetsInfo.length,
+      message: 'All presets support genome-based seeding. Use initialGenomes field in preset config.',
+    });
+  } catch (error: any) {
+    console.error('Error fetching presets support:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/evolution/next-generation
  * Generate next generation of agent genomes using evolutionary algorithms
  */
@@ -977,6 +1041,7 @@ server.listen(PORT, () => {
 ║  - POST /api/simulation/create                        ║
 ║  - POST /api/cluster/start                            ║
 ║  - POST /api/evolution/next-generation                ║
+║  - GET  /api/evolution/presets-support                ║
 ║  - GET  /api/cluster/results                          ║
 ║  - GET  /api/analytics/metrics                        ║
 ║                                                       ║

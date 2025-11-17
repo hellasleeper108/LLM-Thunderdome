@@ -13,6 +13,7 @@ import { PresetConfig } from '../simulations/presets';
 import { v4 as uuidv4 } from 'uuid';
 import { AgentState, Replay, FitnessCriteria, AgentGenome } from '../schemas/types';
 import { EvolutionEngine, AgentStats as EvolutionAgentStats } from '../evolution/EvolutionEngine';
+import { personalityFromGenome } from '../agents/personalities';
 
 export interface ClusterConfig {
   simulationCount: number;
@@ -122,33 +123,65 @@ export class SimulationCluster {
 
       const engine = new SimulationEngine(world, logger, engineConfig);
 
-      // Create isolated agents
+      // Create isolated agents (from genomes or personalities)
       const agents: BaseAgent[] = [];
-      this.config.preset.agentPersonalities.forEach((personality, idx) => {
-        const agentId = uuidv4();
-        const agentName = `${personality.name}-${i + 1}-${idx + 1}`;
 
-        // Randomize position if configured
-        let position = { x: idx * 2, y: idx * 2 };
-        if (this.config.randomizeSeed) {
-          position = {
-            x: Math.floor(Math.random() * this.config.preset.worldWidth),
-            y: Math.floor(Math.random() * this.config.preset.worldHeight),
-          };
-        }
+      if (this.config.preset.initialGenomes && this.config.preset.initialGenomes.length > 0) {
+        // Use evolved genomes
+        this.config.preset.initialGenomes.forEach((genome, idx) => {
+          const agentId = uuidv4();
+          const personality = personalityFromGenome(genome);
+          const agentName = `${personality.name}-${i + 1}-${idx + 1}`;
 
-        // Create agent (use ScriptedAgent for deterministic results)
-        const agent = new ScriptedAgent(
-          agentName,
-          personality,
-          position,
-          this.config.preset.globalGoals || [],
-          { strategy: 'social' }
-        );
+          // Randomize position if configured
+          let position = { x: idx * 2, y: idx * 2 };
+          if (this.config.randomizeSeed) {
+            position = {
+              x: Math.floor(Math.random() * this.config.preset.worldWidth),
+              y: Math.floor(Math.random() * this.config.preset.worldHeight),
+            };
+          }
 
-        agents.push(agent);
-        engine.addAgent(agent);
-      });
+          // Create agent (use ScriptedAgent for deterministic results)
+          const agent = new ScriptedAgent(
+            agentName,
+            personality,
+            position,
+            this.config.preset.globalGoals || [],
+            { strategy: 'social' }
+          );
+
+          agents.push(agent);
+          engine.addAgent(agent);
+        });
+      } else {
+        // Use traditional personality templates
+        this.config.preset.agentPersonalities.forEach((personality, idx) => {
+          const agentId = uuidv4();
+          const agentName = `${personality.name}-${i + 1}-${idx + 1}`;
+
+          // Randomize position if configured
+          let position = { x: idx * 2, y: idx * 2 };
+          if (this.config.randomizeSeed) {
+            position = {
+              x: Math.floor(Math.random() * this.config.preset.worldWidth),
+              y: Math.floor(Math.random() * this.config.preset.worldHeight),
+            };
+          }
+
+          // Create agent (use ScriptedAgent for deterministic results)
+          const agent = new ScriptedAgent(
+            agentName,
+            personality,
+            position,
+            this.config.preset.globalGoals || [],
+            { strategy: 'social' }
+          );
+
+          agents.push(agent);
+          engine.addAgent(agent);
+        });
+      }
 
       // Store instance
       const instance: SimulationInstance = {
