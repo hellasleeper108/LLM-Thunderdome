@@ -20,6 +20,7 @@ import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
 import { FactionManager, LawSystem, LawType } from './civilization';
 import { initializeStanBridge, getStanBridge, getCommentaryStore, StanCommentary } from './stan';
 import { getHistoryManager } from './history';
+import { getGenealogyTracker } from './evolution';
 
 const app = express();
 const server = createServer(app);
@@ -1353,6 +1354,65 @@ app.post('/api/evolution/next-generation', (req, res) => {
     });
   } catch (error: any) {
     console.error('Error generating next generation:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/evolution/genealogy
+ * Get complete genealogy tree for all evolved genomes
+ */
+app.get('/api/evolution/genealogy', (req, res) => {
+  try {
+    const genealogyTracker = getGenealogyTracker();
+    const tree = genealogyTracker.getTree();
+    const stats = genealogyTracker.getStats();
+
+    res.json({
+      tree,
+      stats,
+    });
+  } catch (error: any) {
+    console.error('Error fetching genealogy:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/evolution/genealogy/:genomeId
+ * Get lineage and details for a specific genome
+ */
+app.get('/api/evolution/genealogy/:genomeId', (req, res) => {
+  try {
+    const { genomeId } = req.params;
+    const genealogyTracker = getGenealogyTracker();
+
+    // Get node for this genome
+    const node = genealogyTracker.getNode(genomeId);
+    if (!node) {
+      return res.status(404).json({ error: `Genome ${genomeId} not found` });
+    }
+
+    // Get lineage (ancestry)
+    const lineage = genealogyTracker.getLineage(genomeId);
+
+    // Get descendants
+    const descendants = genealogyTracker.getDescendants(genomeId);
+
+    // Get siblings
+    const siblings = genealogyTracker.getSiblings(genomeId);
+
+    res.json({
+      node,
+      lineage,
+      descendants,
+      siblings,
+      lineageCount: lineage.length,
+      descendantCount: descendants.length,
+      siblingCount: siblings.length,
+    });
+  } catch (error: any) {
+    console.error('Error fetching genome genealogy:', error);
     res.status(500).json({ error: error.message });
   }
 });

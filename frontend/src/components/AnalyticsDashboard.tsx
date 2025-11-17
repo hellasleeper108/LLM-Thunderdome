@@ -134,17 +134,49 @@ interface HistoryData {
   eras?: EraSummary[];
 }
 
+interface GenealogyNode {
+  genomeId: string;
+  parentIds: string[];
+  generationIndex: number;
+  derivedTraitsSummary: Record<string, number>;
+  timestamp: number;
+  metadata?: {
+    mutated?: boolean;
+    crossover?: boolean;
+    fitnessScore?: number;
+  };
+}
+
+interface GenealogyTree {
+  rootIds: string[];
+  nodes: Record<string, GenealogyNode>;
+  totalGenerations: number;
+  totalGenomes: number;
+}
+
+interface GenealogyData {
+  tree: GenealogyTree;
+  stats: {
+    totalGenomes: number;
+    totalGenerations: number;
+    rootCount: number;
+    averageChildrenPerGenome: number;
+    largestGeneration: { index: number; count: number };
+  };
+}
+
 const API_BASE = 'http://localhost:3001/api';
 
 export function AnalyticsDashboard() {
   const simulation = useStore((state) => state.simulation);
-  const [activeTab, setActiveTab] = useState<'overview' | 'heatmaps' | 'graph' | 'civilization' | 'history'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'heatmaps' | 'graph' | 'civilization' | 'history' | 'genealogy'>('overview');
   const [metrics, setMetrics] = useState<AnalyticsMetrics | null>(null);
   const [aggressionHeatmap, setAggressionHeatmap] = useState<Heatmap | null>(null);
   const [cooperationHeatmap, setCooperationHeatmap] = useState<Heatmap | null>(null);
   const [socialGraph, setSocialGraph] = useState<SocialGraphData | null>(null);
   const [civilizationData, setCivilizationData] = useState<CivilizationAnalytics | null>(null);
   const [historyData, setHistoryData] = useState<HistoryData | null>(null);
+  const [genealogyData, setGenealogyData] = useState<GenealogyData | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Fetch analytics data
@@ -208,6 +240,15 @@ export function AnalyticsDashboard() {
             count: prev?.count || 0,
             eras: data.eras,
           }));
+        }
+      }
+
+      // Fetch genealogy data if on genealogy tab
+      if (activeTab === 'genealogy') {
+        const genealogyRes = await fetch(`${API_BASE}/evolution/genealogy`);
+        if (genealogyRes.ok) {
+          const data = await genealogyRes.json();
+          setGenealogyData(data);
         }
       }
     } catch (error) {
@@ -298,6 +339,16 @@ export function AnalyticsDashboard() {
           >
             History
           </button>
+          <button
+            onClick={() => setActiveTab('genealogy')}
+            className={`px-4 py-2 rounded ${
+              activeTab === 'genealogy'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            Genealogy
+          </button>
         </div>
       </div>
 
@@ -323,6 +374,10 @@ export function AnalyticsDashboard() {
 
         {activeTab === 'history' && (
           <HistoryTab historyData={historyData} loading={loading} />
+        )}
+
+        {activeTab === 'genealogy' && (
+          <GenealogyTab genealogyData={genealogyData} loading={loading} />
         )}
       </div>
     </div>
@@ -970,6 +1025,187 @@ function HistoryTab({
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Genealogy Tab Component
+function GenealogyTab({
+  genealogyData,
+  loading,
+}: {
+  genealogyData: GenealogyData | null;
+  loading: boolean;
+}) {
+  const [selectedGenomeId, setSelectedGenomeId] = useState<string | null>(null);
+  const [expandedGenerations, setExpandedGenerations] = useState<Set<number>>(new Set([0]));
+
+  if (loading) {
+    return <div className="text-gray-400">Loading genealogy...</div>;
+  }
+
+  if (!genealogyData || genealogyData.tree.totalGenomes === 0) {
+    return (
+      <div className="text-gray-400">
+        No genealogy data available. Run an evolution simulation to see genealogy trees.
+      </div>
+    );
+  }
+
+  const { tree, stats } = genealogyData;
+
+  // Group nodes by generation
+  const nodesByGeneration = new Map<number, GenealogyNode[]>();
+  Object.values(tree.nodes).forEach(node => {
+    if (!nodesByGeneration.has(node.generationIndex)) {
+      nodesByGeneration.set(node.generationIndex, []);
+    }
+    nodesByGeneration.get(node.generationIndex)!.push(node);
+  });
+
+  // Sort generations
+  const generations = Array.from(nodesByGeneration.keys()).sort((a, b) => a - b);
+
+  const toggleGeneration = (gen: number) => {
+    const newExpanded = new Set(expandedGenerations);
+    if (newExpanded.has(gen)) {
+      newExpanded.delete(gen);
+    } else {
+      newExpanded.add(gen);
+    }
+    setExpandedGenerations(newExpanded);
+  };
+
+  const getNodeColor = (node: GenealogyNode) => {
+    if (node.metadata?.mutated) return 'border-yellow-500';
+    if (node.metadata?.crossover) return 'border-purple-500';
+    return 'border-gray-600';
+  };
+
+  const getNodeIcon = (node: GenealogyNode) => {
+    if (node.metadata?.mutated) return '🧬';
+    if (node.metadata?.crossover) return '👶';
+    return '🌱';
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-xl font-bold text-white mb-3">Evolutionary Genealogy</h3>
+        <p className="text-sm text-gray-400">
+          Track genetic lineage across generations of evolved agents
+        </p>
+      </div>
+
+      {/* Statistics */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="bg-gray-800 rounded p-3">
+          <div className="text-xs text-gray-400 mb-1">Total Genomes</div>
+          <div className="text-2xl font-bold text-white">{stats.totalGenomes}</div>
+        </div>
+        <div className="bg-gray-800 rounded p-3">
+          <div className="text-xs text-gray-400 mb-1">Generations</div>
+          <div className="text-2xl font-bold text-white">{stats.totalGenerations}</div>
+        </div>
+        <div className="bg-gray-800 rounded p-3">
+          <div className="text-xs text-gray-400 mb-1">Root Genomes</div>
+          <div className="text-2xl font-bold text-white">{stats.rootCount}</div>
+        </div>
+        <div className="bg-gray-800 rounded p-3">
+          <div className="text-xs text-gray-400 mb-1">Avg Children</div>
+          <div className="text-2xl font-bold text-white">{stats.averageChildrenPerGenome.toFixed(1)}</div>
+        </div>
+        <div className="bg-gray-800 rounded p-3">
+          <div className="text-xs text-gray-400 mb-1">Largest Gen</div>
+          <div className="text-2xl font-bold text-white">
+            {stats.largestGeneration.index} ({stats.largestGeneration.count})
+          </div>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="bg-gray-800 rounded p-3 flex gap-4 items-center text-sm">
+        <span className="text-gray-400">Legend:</span>
+        <div className="flex items-center gap-2">
+          <span>🌱</span>
+          <span className="text-gray-300">Root</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span>🧬</span>
+          <span className="text-gray-300">Mutated</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span>👶</span>
+          <span className="text-gray-300">Crossover</span>
+        </div>
+      </div>
+
+      {/* Genealogy Tree by Generation */}
+      <div className="space-y-2">
+        <h4 className="text-lg font-bold text-white">Family Tree</h4>
+        {generations.map(gen => {
+          const nodes = nodesByGeneration.get(gen) || [];
+          const isExpanded = expandedGenerations.has(gen);
+
+          return (
+            <div key={gen} className="bg-gray-800 rounded">
+              {/* Generation Header */}
+              <button
+                onClick={() => toggleGeneration(gen)}
+                className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-750 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-white font-bold">Generation {gen}</span>
+                  <span className="text-sm text-gray-400">{nodes.length} genomes</span>
+                </div>
+                <span className="text-gray-400">{isExpanded ? '▼' : '▶'}</span>
+              </button>
+
+              {/* Generation Content */}
+              {isExpanded && (
+                <div className="px-4 pb-4 space-y-2">
+                  {nodes.map(node => (
+                    <div
+                      key={node.genomeId}
+                      onClick={() => setSelectedGenomeId(node.genomeId)}
+                      className={`bg-gray-700 rounded p-3 cursor-pointer transition-all border-2 ${
+                        selectedGenomeId === node.genomeId
+                          ? 'ring-2 ring-blue-500'
+                          : getNodeColor(node)
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="text-2xl">{getNodeIcon(node)}</div>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-mono text-xs text-white">
+                              {node.genomeId.substring(0, 12)}...
+                            </span>
+                            {node.parentIds.length > 0 && (
+                              <span className="text-xs text-gray-400">
+                                {node.parentIds.length} parent(s)
+                              </span>
+                            )}
+                          </div>
+                          {/* Traits */}
+                          <div className="grid grid-cols-3 gap-2 text-xs mt-2">
+                            {Object.entries(node.derivedTraitsSummary).map(([key, value]) => (
+                              <div key={key}>
+                                <span className="text-gray-400">{key}:</span>
+                                <span className="text-white ml-1">{value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

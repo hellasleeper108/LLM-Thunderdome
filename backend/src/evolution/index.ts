@@ -9,3 +9,11 @@ export {
   type GenerationResult,
   type AgentStats,
 } from './EvolutionEngine';
+
+export {
+  GenealogyTracker,
+  getGenealogyTracker,
+  setGenealogyTracker,
+  type GenealogyNode,
+  type GenealogyTree,
+} from './GenealogyTracker';

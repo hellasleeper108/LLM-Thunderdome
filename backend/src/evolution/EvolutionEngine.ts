@@ -5,6 +5,7 @@
 
 import { AgentState } from '../schemas/types';
 import { BaseAgent } from '../agents/BaseAgent';
+import { getGenealogyTracker } from './GenealogyTracker';
 
 export interface FitnessCriteria {
   survivalWeight: number;
@@ -118,7 +119,7 @@ export class EvolutionEngine {
   buildGenomeFromAgent(agent: BaseAgent, generation: number = 0): AgentGenome {
     const state = agent.getState();
 
-    return {
+    const genome: AgentGenome = {
       id: state.id,
       basePersonalityId: state.personality.name,
       generation,
@@ -136,6 +137,12 @@ export class EvolutionEngine {
         createdAt: Date.now(),
       },
     };
+
+    // Register in genealogy tracker (no parents for initial genome)
+    const genealogyTracker = getGenealogyTracker();
+    genealogyTracker.registerGenome(genome, null, generation);
+
+    return genome;
   }
 
   /**
@@ -168,6 +175,15 @@ export class EvolutionEngine {
         mutated.traits[key] = Math.max(0, Math.min(100, currentValue + mutation));
       }
     });
+
+    // Register in genealogy tracker
+    const genealogyTracker = getGenealogyTracker();
+    genealogyTracker.registerGenome(
+      mutated,
+      [genome],
+      mutated.generation,
+      { mutated: true }
+    );
 
     return mutated;
   }
@@ -212,6 +228,15 @@ export class EvolutionEngine {
       const variation = (Math.random() - 0.5) * 4; // +/- 2 points
       offspring.traits[key] = Math.max(0, Math.min(100, offspring.traits[key] + variation));
     });
+
+    // Register in genealogy tracker
+    const genealogyTracker = getGenealogyTracker();
+    genealogyTracker.registerGenome(
+      offspring,
+      [parentA, parentB],
+      offspring.generation,
+      { crossover: true }
+    );
 
     return offspring;
   }
