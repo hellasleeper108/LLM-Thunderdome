@@ -6,6 +6,8 @@
 import { AgentState, Position, Message, ActionResult } from '../schemas/types';
 import { SocialGraph } from '../agents/SocialGraph';
 import { AllianceManager } from '../agents/AllianceManager';
+import { Faction } from '../civilization/FactionManager';
+import { Law, LawViolation } from '../civilization/LawSystem';
 
 // Analytics data structures
 export interface HeatmapCell {
@@ -144,6 +146,29 @@ export interface AnalyticsMetrics {
     resourcesGathered: number;
     averageMovement: number;
   };
+}
+
+export interface FactionStabilityMap {
+  [factionId: string]: number;
+}
+
+export interface InterFactionConflictRates {
+  [pairKey: string]: number; // key format: "FactionA|FactionB"
+}
+
+export interface LawComplianceData {
+  [lawId: string]: {
+    violations: number;
+    totalRelevant: number; // Total actions that could violate this law
+    complianceRate: number; // percentage
+  };
+}
+
+export interface CivilizationAnalytics {
+  factions: Array<Faction & { stability: number; memberCount: number }>;
+  factionStability: FactionStabilityMap;
+  conflictRates: InterFactionConflictRates;
+  lawCompliance: LawComplianceData;
 }
 
 export class AnalyticsEngine {
@@ -674,5 +699,204 @@ export class AnalyticsEngine {
         averageMovement: agents.length > 0 ? moves.length / agents.length : 0,
       },
     };
+  }
+
+  /**
+   * Compute faction stability scores
+   */
+  computeFactionStability(factions: Faction[]): FactionStabilityMap {
+    const stabilityMap: FactionStabilityMap = {};
+
+    factions.forEach((faction) => {
+      // Base stability from cohesion (0-1)
+      let stability = faction.cohesion;
+
+      // Member count factor (optimal: 3-7 members)
+      const memberCount = faction.members.size;
+      if (memberCount === 0) {
+        stability = 0;
+      } else if (memberCount < 3) {
+        stability *= 0.8; // Small factions are fragile
+      } else if (memberCount > 10) {
+        stability *= 0.9; // Large factions are harder to manage
+      }
+
+      // Law count factor (sweet spot: 1-5 laws)
+      const lawCount = faction.laws.length;
+      if (lawCount === 0) {
+        stability *= 0.9; // No laws = less structure
+      } else if (lawCount > 5) {
+        stability *= 0.95; // Too many laws = inflexibility
+      }
+
+      // Resource factor (resources per member)
+      const totalResources =
+        faction.resources.food + faction.resources.water + faction.resources.materials;
+      const resourcesPerMember = memberCount > 0 ? totalResources / memberCount : 0;
+
+      if (resourcesPerMember < 5) {
+        stability *= 0.7; // Scarcity breeds discontent
+      } else if (resourcesPerMember > 20) {
+        stability *= 1.1; // Abundance increases stability
+        stability = Math.min(1, stability); // Cap at 1
+      }
+
+      stabilityMap[faction.id] = Math.max(0, Math.min(1, stability));
+    });
+
+    return stabilityMap;
+  }
+
+  /**
+   * Compute inter-faction conflict rates
+   * Analyzes attack actions between members of different factions
+   */
+  computeInterFactionConflictRates(
+    factions: Faction[],
+    actionResults: ActionResult[],
+    agents: AgentState[]
+  ): InterFactionConflictRates {
+    const conflictRates: InterFactionConflictRates = {};
+
+    // Build agent-to-faction map
+    const agentToFaction = new Map<string, string>();
+    factions.forEach((faction) => {
+      faction.members.forEach((agentId) => {
+        agentToFaction.set(agentId, faction.id);
+      });
+    });
+
+    // Count attacks between factions
+    const attackCounts = new Map<string, number>();
+    const interactionCounts = new Map<string, number>(); // Total interactions for context
+
+    actionResults.forEach((result) => {
+      const agentId = result.action.agentId;
+      const targetId = typeof result.action.target === 'string' ? result.action.target : null;
+
+      if (!targetId || !agentId) return;
+
+      const agentFaction = agentToFaction.get(agentId);
+      const targetFaction = agentToFaction.get(targetId);
+
+      // Only count inter-faction interactions
+      if (!agentFaction || !targetFaction || agentFaction === targetFaction) return;
+
+      // Create consistent pair key (alphabetically sorted)
+      const pairKey = [agentFaction, targetFaction].sort().join('|');
+
+      // Count total interactions
+      interactionCounts.set(pairKey, (interactionCounts.get(pairKey) || 0) + 1);
+
+      // Count attacks
+      if (result.action.type === 'attack') {
+        attackCounts.set(pairKey, (attackCounts.get(pairKey) || 0) + 1);
+      }
+    });
+
+    // Calculate conflict rates (attacks / total interactions)
+    interactionCounts.forEach((totalInteractions, pairKey) => {
+      const attacks = attackCounts.get(pairKey) || 0;
+      conflictRates[pairKey] = totalInteractions > 0 ? attacks / totalInteractions : 0;
+    });
+
+    // Initialize zero rates for faction pairs with no interactions
+    factions.forEach((factionA, i) => {
+      factions.slice(i + 1).forEach((factionB) => {
+        const pairKey = [factionA.id, factionB.id].sort().join('|');
+        if (!(pairKey in conflictRates)) {
+          conflictRates[pairKey] = 0;
+        }
+      });
+    });
+
+    return conflictRates;
+  }
+
+  /**
+   * Compute law compliance rates
+   * Tracks violations and compliance for each law
+   */
+  computeLawComplianceRates(
+    laws: Law[],
+    factions: Faction[],
+    actionResults: ActionResult[],
+    lawViolations: Array<{ lawId: string; agentId: string; turn: number }>
+  ): LawComplianceData {
+    const complianceData: LawComplianceData = {};
+
+    // Build agent-to-faction map to know which laws apply
+    const agentToFaction = new Map<string, Faction>();
+    factions.forEach((faction) => {
+      faction.members.forEach((agentId) => {
+        agentToFaction.set(agentId, faction);
+      });
+    });
+
+    laws.forEach((law) => {
+      // Count violations for this law
+      const violations = lawViolations.filter((v) => v.lawId === law.id).length;
+
+      // Count total relevant actions (actions that could violate this law)
+      let totalRelevant = 0;
+
+      actionResults.forEach((result) => {
+        const agentId = result.action.agentId;
+        const faction = agentToFaction.get(agentId);
+
+        // Only count actions by agents in factions that have this law
+        if (!faction || !faction.laws.includes(law.id)) return;
+
+        // Count actions relevant to this law type
+        switch (law.type) {
+          case 'NO_ATTACK':
+            if (result.action.type === 'attack') {
+              totalRelevant++;
+            }
+            break;
+
+          case 'RESOURCE_SHARING':
+            if (
+              result.action.type === 'communicate' ||
+              result.action.type === 'share' ||
+              result.action.type === 'negotiate'
+            ) {
+              totalRelevant++;
+            }
+            break;
+
+          case 'COOPERATION':
+            if (
+              result.action.type === 'form_alliance' ||
+              result.action.type === 'break_alliance'
+            ) {
+              totalRelevant++;
+            }
+            break;
+
+          case 'TRIBUTE':
+            if (result.action.type === 'gather') {
+              totalRelevant++;
+            }
+            break;
+
+          case 'CUSTOM':
+            // For custom laws, count all actions
+            totalRelevant++;
+            break;
+        }
+      });
+
+      const complianceRate =
+        totalRelevant > 0 ? ((totalRelevant - violations) / totalRelevant) * 100 : 100;
+
+      complianceData[law.id] = {
+        violations,
+        totalRelevant,
+        complianceRate,
+      };
+    });
+
+    return complianceData;
   }
 }

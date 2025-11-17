@@ -773,6 +773,72 @@ app.get('/api/analytics/survival', (req, res) => {
 });
 
 /**
+ * GET /api/analytics/civilization
+ * Get civilization-level analytics (factions, stability, conflicts, law compliance)
+ */
+app.get('/api/analytics/civilization', (req, res) => {
+  try {
+    if (!factionManager || !lawSystem) {
+      return res.json({
+        factions: [],
+        factionStability: {},
+        conflictRates: {},
+        lawCompliance: {},
+      });
+    }
+
+    const analyticsEngine = new AnalyticsEngine();
+    const factions = factionManager.listFactions();
+    const laws = lawSystem.listLaws();
+
+    // Compute faction stability
+    const factionStability = analyticsEngine.computeFactionStability(factions);
+
+    // Get simulation data for conflict rates and law compliance
+    let conflictRates = {};
+    let lawCompliance = {};
+
+    if (engine) {
+      const state = engine.getState();
+
+      // Compute inter-faction conflict rates
+      conflictRates = analyticsEngine.computeInterFactionConflictRates(
+        factions,
+        state.actionResults,
+        state.agents
+      );
+
+      // Compute law compliance rates
+      // TODO: Track law violations in simulation state
+      lawCompliance = analyticsEngine.computeLawComplianceRates(
+        laws,
+        factions,
+        state.actionResults,
+        [] // Law violations array (to be implemented)
+      );
+    }
+
+    // Build response with enriched faction data
+    const enrichedFactions = factions.map((faction) => ({
+      ...faction,
+      members: Array.from(faction.members), // Convert Set to Array
+      stability: factionStability[faction.id] || 0,
+      memberCount: faction.members.size,
+    }));
+
+    res.json({
+      factions: enrichedFactions,
+      factionStability,
+      conflictRates,
+      lawCompliance,
+    });
+  } catch (error: any) {
+    console.error('Error computing civilization analytics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/cluster/start
  * Start a cluster of simulations running in parallel
  */
