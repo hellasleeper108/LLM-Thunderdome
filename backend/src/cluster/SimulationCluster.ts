@@ -15,12 +15,15 @@ import { AgentState, Replay, FitnessCriteria, AgentGenome } from '../schemas/typ
 import { EvolutionEngine, AgentStats as EvolutionAgentStats } from '../evolution/EvolutionEngine';
 import { personalityFromGenome } from '../agents/personalities';
 import { getStanBridge } from '../stan';
+import { getMetaverseManager } from '../metaverse';
 
 export interface ClusterConfig {
   simulationCount: number;
   preset: PresetConfig;
   randomizeSeed?: boolean; // Randomize agent positions and world generation
   autoAdvance?: boolean;
+  createMetaverseWorlds?: boolean; // Create separate WorldInstance for each simulation
+  enableCrossWorldEffects?: boolean; // Enable periodic cross-world effects
 }
 
 export interface SimulationInstance {
@@ -33,6 +36,7 @@ export interface SimulationInstance {
   status: 'idle' | 'running' | 'paused' | 'completed';
   startTime?: number;
   endTime?: number;
+  worldId?: string; // Link to metaverse WorldInstance
 }
 
 export interface SimulationOutcome {
@@ -184,6 +188,25 @@ export class SimulationCluster {
         });
       }
 
+      // Create metaverse world if configured
+      let worldId: string | undefined;
+      if (this.config.createMetaverseWorlds) {
+        const metaverseManager = getMetaverseManager();
+        const worldInstance = metaverseManager.createWorldInstance(simName, i);
+        worldId = worldInstance.id;
+
+        // Initialize world metadata based on simulation setup
+        metaverseManager.updateWorld(worldId, {
+          meta: {
+            ...worldInstance.meta,
+            totalAgents: agents.length,
+            activeSessions: 1,
+          },
+        });
+
+        console.log(`[Cluster] Linked ${simName} to metaverse world ${worldId}`);
+      }
+
       // Store instance
       const instance: SimulationInstance = {
         id: simId,
@@ -193,6 +216,7 @@ export class SimulationCluster {
         world,
         agents,
         status: 'idle',
+        worldId,
       };
 
       this.instances.set(simId, instance);
@@ -675,5 +699,106 @@ export class SimulationCluster {
     }
 
     return nextGeneration;
+  }
+
+  /**
+   * Start periodic cross-world effects application
+   * Should be called when running simulations with metaverse integration
+   */
+  startCrossWorldEffects(intervalMs: number = 5000): NodeJS.Timer | null {
+    if (!this.config.enableCrossWorldEffects) {
+      console.log('[Cluster] Cross-world effects not enabled');
+      return null;
+    }
+
+    // Check if any instances have worldId
+    const linkedInstances = Array.from(this.instances.values()).filter(inst => inst.worldId);
+    if (linkedInstances.length === 0) {
+      console.log('[Cluster] No simulations linked to metaverse worlds');
+      return null;
+    }
+
+    console.log(
+      `[Cluster] Starting cross-world effects (every ${intervalMs}ms for ${linkedInstances.length} worlds)`
+    );
+
+    const interval = setInterval(() => {
+      try {
+        // Update world metadata from simulation states
+        linkedInstances.forEach(instance => {
+          if (instance.worldId) {
+            const metaverseManager = getMetaverseManager();
+            const aliveAgents = instance.agents.filter(a => a.getState().health > 0);
+
+            // Aggregate resource totals
+            let totalFood = 0;
+            let totalWater = 0;
+            let totalMaterial = 0;
+            let totalCulturalInfluence = 0;
+            const beliefs = new Set<string>();
+
+            aliveAgents.forEach(agent => {
+              const state = agent.getState();
+              totalFood += state.inventory?.food || 0;
+              totalWater += state.inventory?.water || 0;
+              totalMaterial += state.inventory?.material || 0;
+
+              // Cultural influence from empathy and cooperation
+              totalCulturalInfluence += (state.stats.empathy + state.stats.cooperation) / 2;
+
+              // Collect beliefs from agent goals
+              state.goals.forEach(goal => {
+                if (goal.description) {
+                  beliefs.add(goal.description);
+                }
+              });
+            });
+
+            // Update world metadata
+            const avgCulturalInfluence = aliveAgents.length > 0
+              ? totalCulturalInfluence / aliveAgents.length
+              : 50;
+
+            metaverseManager.updateWorldResources(instance.worldId, {
+              food: Math.min(200, (totalFood / Math.max(1, aliveAgents.length)) * 10),
+              water: Math.min(200, (totalWater / Math.max(1, aliveAgents.length)) * 10),
+              material: Math.min(200, (totalMaterial / Math.max(1, aliveAgents.length)) * 10),
+            });
+
+            metaverseManager.updateWorld(instance.worldId, {
+              meta: {
+                totalAgents: instance.agents.length,
+                activeSessions: instance.status === 'running' ? 1 : 0,
+                resourceAbundance: metaverseManager.getWorld(instance.worldId)?.meta.resourceAbundance,
+                dominantBeliefs: Array.from(beliefs).slice(0, 5),
+                culturalInfluence: avgCulturalInfluence,
+              },
+            });
+          }
+        });
+
+        // Apply cross-world effects
+        const metaverseManager = getMetaverseManager();
+        metaverseManager.applyCrossWorldEffects();
+      } catch (error) {
+        console.error('[Cluster] Error applying cross-world effects:', error);
+      }
+    }, intervalMs);
+
+    return interval;
+  }
+
+  /**
+   * Get all simulation instances
+   */
+  getInstances(): SimulationInstance[] {
+    return Array.from(this.instances.values());
+  }
+
+  /**
+   * Get instances linked to metaverse
+   */
+  getMetaverseLinkedInstances(): SimulationInstance[] {
+    return Array.from(this.instances.values()).filter(inst => inst.worldId !== undefined);
   }
 }

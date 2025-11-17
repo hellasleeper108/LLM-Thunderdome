@@ -21,6 +21,7 @@ import { FactionManager, LawSystem, LawType } from './civilization';
 import { initializeStanBridge, getStanBridge, getCommentaryStore, StanCommentary } from './stan';
 import { getHistoryManager } from './history';
 import { getGenealogyTracker } from './evolution';
+import { getMetaverseManager } from './metaverse';
 
 const app = express();
 const server = createServer(app);
@@ -1413,6 +1414,138 @@ app.get('/api/evolution/genealogy/:genomeId', (req, res) => {
     });
   } catch (error: any) {
     console.error('Error fetching genome genealogy:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/metaverse/worlds
+ * Get all worlds in the metaverse
+ */
+app.get('/api/metaverse/worlds', (req, res) => {
+  try {
+    const metaverseManager = getMetaverseManager();
+    const worlds = metaverseManager.listWorlds();
+    const stats = metaverseManager.getStats();
+
+    res.json({
+      worlds,
+      stats,
+    });
+  } catch (error: any) {
+    console.error('Error fetching metaverse worlds:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/metaverse/worlds
+ * Create a new world instance
+ */
+app.post('/api/metaverse/worlds', (req, res) => {
+  try {
+    const { name, seed } = req.body;
+
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ error: 'World name is required' });
+    }
+
+    const metaverseManager = getMetaverseManager();
+    const world = metaverseManager.createWorldInstance(name, seed);
+
+    res.json({
+      success: true,
+      world,
+    });
+  } catch (error: any) {
+    console.error('Error creating world:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/metaverse/links
+ * Get all cross-world links, optionally filtered by worldId
+ */
+app.get('/api/metaverse/links', (req, res) => {
+  try {
+    const { worldId } = req.query;
+    const metaverseManager = getMetaverseManager();
+
+    let links;
+    if (worldId && typeof worldId === 'string') {
+      links = metaverseManager.getLinks(worldId);
+    } else {
+      links = metaverseManager.getAllLinks();
+    }
+
+    res.json({
+      links,
+      count: links.length,
+    });
+  } catch (error: any) {
+    console.error('Error fetching metaverse links:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/metaverse/links
+ * Create a new cross-world link
+ */
+app.post('/api/metaverse/links', (req, res) => {
+  try {
+    const { fromWorldId, toWorldId, type, intensity, meta } = req.body;
+
+    // Validate required fields
+    if (!fromWorldId || !toWorldId) {
+      return res.status(400).json({ error: 'fromWorldId and toWorldId are required' });
+    }
+
+    if (!type || !['PORTAL', 'TRADE_ROUTE', 'WAR_FRONT', 'SIGNAL_LINK'].includes(type)) {
+      return res.status(400).json({
+        error: 'type must be one of: PORTAL, TRADE_ROUTE, WAR_FRONT, SIGNAL_LINK',
+      });
+    }
+
+    if (intensity !== undefined && (typeof intensity !== 'number' || intensity < 0 || intensity > 1)) {
+      return res.status(400).json({ error: 'intensity must be a number between 0 and 1' });
+    }
+
+    const metaverseManager = getMetaverseManager();
+    const link = metaverseManager.registerLink({
+      fromWorldId,
+      toWorldId,
+      type,
+      intensity: intensity ?? 0.5,
+      meta,
+    });
+
+    res.json({
+      success: true,
+      link,
+    });
+  } catch (error: any) {
+    console.error('Error creating link:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/metaverse/apply-effects
+ * Manually trigger cross-world effects
+ */
+app.post('/api/metaverse/apply-effects', (req, res) => {
+  try {
+    const metaverseManager = getMetaverseManager();
+    metaverseManager.applyCrossWorldEffects();
+
+    res.json({
+      success: true,
+      message: 'Cross-world effects applied',
+    });
+  } catch (error: any) {
+    console.error('Error applying cross-world effects:', error);
     res.status(500).json({ error: error.message });
   }
 });
