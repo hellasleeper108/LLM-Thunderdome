@@ -16,6 +16,7 @@ import { ReplayRecorder } from '../logging/ReplayRecorder';
 import { getStanBridge } from '../stan';
 import { BeliefSystem, Belief, Ritual } from '../civilization/BeliefSystem';
 import { FactionManager } from '../civilization/FactionManager';
+import { LanguageEngine } from '../language/LanguageEngine';
 import {
   Action,
   ActionType,
@@ -62,6 +63,7 @@ export class SimulationEngine {
   private replayRecorder: ReplayRecorder;
   private beliefSystem: BeliefSystem;
   private factionManager: FactionManager | null;
+  private languageEngine: LanguageEngine;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -94,6 +96,13 @@ export class SimulationEngine {
     // Initialize belief system for emergent religions
     this.beliefSystem = new BeliefSystem(0.7); // 0.7 = event drama threshold
     this.factionManager = null; // Will be set externally if factions are enabled
+
+    // Initialize language engine for dialect evolution
+    this.languageEngine = new LanguageEngine({
+      mutationRate: 0.1, // 10% chance of mutation per turn
+      variantsPerConcept: 5,
+      mergeBlendRate: 0.3,
+    });
 
     this.config = {
       turnDuration: config.turnDuration,
@@ -306,6 +315,9 @@ export class SimulationEngine {
 
     // Phase 10: Evaluate beliefs and perform rituals
     this.evaluateBeliefsAndRituals();
+
+    // Phase 11: Advance language drift
+    this.languageEngine.advanceTurn(this.currentTurn);
 
     this.logger.logEvent({
       type: 'state_update',
@@ -1993,10 +2005,18 @@ export class SimulationEngine {
   }
 
   /**
-   * Set faction manager (for belief system integration)
+   * Set faction manager (for belief system and language integration)
    */
   setFactionManager(factionManager: FactionManager): void {
     this.factionManager = factionManager;
+
+    // Initialize dialects for all existing factions
+    const factions = factionManager.listFactions();
+    factions.forEach(faction => {
+      this.languageEngine.initializeFactionDialect(faction.id);
+    });
+
+    console.log(`[SimulationEngine] Initialized dialects for ${factions.length} faction(s)`);
   }
 
   /**
@@ -2004,6 +2024,41 @@ export class SimulationEngine {
    */
   getBeliefSystem(): BeliefSystem {
     return this.beliefSystem;
+  }
+
+  /**
+   * Get language engine
+   */
+  getLanguageEngine(): LanguageEngine {
+    return this.languageEngine;
+  }
+
+  /**
+   * Translate message content using faction dialects
+   * Replaces semantic concepts with faction-specific variants
+   */
+  private translateMessage(content: string, factionId: string | null): string {
+    if (!factionId) return content;
+
+    // Simple replacement of known concepts
+    // In practice, you might want more sophisticated parsing
+    let translated = content;
+
+    // Common concepts that might appear in messages
+    const concepts = [
+      'food', 'water', 'material', 'ally', 'enemy', 'attack', 'defend',
+      'trade', 'alliance', 'faction', 'leader', 'territory', 'danger',
+      'peace', 'war', 'trust', 'betrayal', 'honor', 'survival', 'victory'
+    ];
+
+    concepts.forEach(concept => {
+      const phrase = this.languageEngine.getPhrase(factionId, concept);
+      // Case-insensitive replacement
+      const regex = new RegExp(`\\b${concept}\\b`, 'gi');
+      translated = translated.replace(regex, phrase);
+    });
+
+    return translated;
   }
 
   /**

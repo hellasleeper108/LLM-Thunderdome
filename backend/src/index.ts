@@ -1413,6 +1413,52 @@ app.get('/api/civilization/rituals', (req, res) => {
 });
 
 /**
+ * GET /api/language/dialects
+ * Get all faction dialects
+ */
+app.get('/api/language/dialects', (req, res) => {
+  try {
+    if (!engine) {
+      return res.json({ dialects: [] });
+    }
+
+    const languageEngine = engine.getLanguageEngine();
+    const dialects = languageEngine.getAllDialects();
+    const stats = languageEngine.getStats();
+
+    res.json({ dialects, stats });
+  } catch (error: any) {
+    console.error('Error fetching dialects:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/language/dialects/:factionId
+ * Get dialect for a specific faction
+ */
+app.get('/api/language/dialects/:factionId', (req, res) => {
+  try {
+    if (!engine) {
+      return res.status(404).json({ error: 'No active simulation' });
+    }
+
+    const { factionId } = req.params;
+    const languageEngine = engine.getLanguageEngine();
+    const dialect = languageEngine.getDialect(factionId);
+
+    if (!dialect) {
+      return res.status(404).json({ error: `Dialect not found for faction ${factionId}` });
+    }
+
+    res.json({ dialect });
+  } catch (error: any) {
+    console.error('Error fetching dialect:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/civilization/factions/debug-seed
  * Debug endpoint to seed initial factions for testing
  */

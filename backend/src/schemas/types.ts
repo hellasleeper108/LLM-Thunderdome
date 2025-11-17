@@ -112,9 +112,11 @@ export interface Message {
   id: string;
   from: string;
   to: string;
-  content: string;
+  content: string; // Rendered content using faction dialect
+  semanticContent?: string; // Original semantic meaning (before dialect translation)
   type: 'request' | 'threat' | 'bargain' | 'alliance' | 'info' | 'other';
   timestamp: number;
+  factionId?: string; // Faction ID of sender (for dialect resolution)
 }
 
 export interface WorldState {
