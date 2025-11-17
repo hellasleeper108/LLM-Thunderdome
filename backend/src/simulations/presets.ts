@@ -18,6 +18,7 @@ export interface PresetConfig {
   agentPersonalities: Personality[];
   globalGoals?: Goal[];
   initialGenomes?: AgentGenome[]; // Optional: Use evolved genomes instead of personality templates
+  culturePackId?: string; // Optional: Apply cultural biases from a culture pack
 }
 
 /**

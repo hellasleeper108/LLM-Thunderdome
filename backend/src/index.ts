@@ -141,6 +141,16 @@ app.post('/api/simulation/create', (req, res) => {
       visionRadius: 3,
     });
 
+    // Load culture pack if specified
+    let culturePack: any = null;
+    if (finalConfig.culturePackId) {
+      const { getCulturePack } = require('./civilization');
+      culturePack = getCulturePack(finalConfig.culturePackId);
+      if (culturePack) {
+        console.log(`[Simulation] Applying culture pack: ${culturePack.name}`);
+      }
+    }
+
     // Add agents from initialGenomes or preset personalities
     if (finalConfig.initialGenomes && finalConfig.initialGenomes.length > 0) {
       // Use evolved genomes
@@ -153,7 +163,14 @@ app.post('/api/simulation/create', (req, res) => {
         };
 
         // Convert genome to personality
-        const personality = personalityFromGenome(genome);
+        let personality = personalityFromGenome(genome);
+
+        // Apply culture pack biases if present
+        if (culturePack) {
+          const { applyCultureTraits } = require('./civilization');
+          personality.traits = applyCultureTraits(personality.traits, culturePack);
+        }
+
         const goals = createGoalsFromPersonality(personality);
 
         const agent = new LLMAgent(
@@ -173,6 +190,15 @@ app.post('/api/simulation/create', (req, res) => {
           x: Math.floor(Math.random() * (finalConfig.worldWidth || 20)),
           y: Math.floor(Math.random() * (finalConfig.worldHeight || 20)),
         };
+
+        // Apply culture pack biases if present
+        if (culturePack) {
+          const { applyCultureTraits } = require('./civilization');
+          personality = {
+            ...personality,
+            traits: applyCultureTraits(personality.traits, culturePack),
+          };
+        }
 
         const goals = createGoalsFromPersonality(personality);
 
@@ -1408,6 +1434,22 @@ app.get('/api/civilization/rituals', (req, res) => {
     res.json({ rituals });
   } catch (error: any) {
     console.error('Error fetching rituals:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/culture-packs
+ * Get all available culture packs
+ */
+app.get('/api/civilization/culture-packs', (req, res) => {
+  try {
+    const { getAllCulturePacks } = require('./civilization');
+    const culturePacks = getAllCulturePacks();
+
+    res.json({ culturePacks });
+  } catch (error: any) {
+    console.error('Error fetching culture packs:', error);
     res.status(500).json({ error: error.message });
   }
 });
