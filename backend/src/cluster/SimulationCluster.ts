@@ -11,7 +11,8 @@ import { LLMAgent } from '../agents/LLMAgent';
 import { ScriptedAgent, Strategy } from '../agents/ScriptedAgent';
 import { PresetConfig } from '../simulations/presets';
 import { v4 as uuidv4 } from 'uuid';
-import { AgentState, Replay } from '../schemas/types';
+import { AgentState, Replay, FitnessCriteria, AgentGenome } from '../schemas/types';
+import { EvolutionEngine, AgentStats as EvolutionAgentStats } from '../evolution/EvolutionEngine';
 
 export interface ClusterConfig {
   simulationCount: number;
@@ -518,5 +519,97 @@ export class SimulationCluster {
    */
   getOutcomes(): SimulationOutcome[] {
     return this.outcomes;
+  }
+
+  /**
+   * Generate next generation configurations using evolutionary algorithms
+   * @param fitnessCriteria Criteria for evaluating agent fitness
+   * @param topK Number of top genomes to select
+   * @param mutationRate Mutation rate for evolution (0-1)
+   * @param populationSize Target population size for next generation
+   * @returns Array of evolved agent genomes for next cluster run
+   */
+  generateNextGenerationConfigs(
+    fitnessCriteria: FitnessCriteria,
+    topK: number = 5,
+    mutationRate: number = 0.1,
+    populationSize?: number
+  ): AgentGenome[] {
+    if (this.outcomes.length === 0) {
+      throw new Error('No completed simulations found. Run a cluster first.');
+    }
+
+    // Use population size from config if not specified
+    const targetPopulation = populationSize || this.config.preset.agentPersonalities.length;
+
+    // Initialize evolution engine
+    const evolutionEngine = new EvolutionEngine(fitnessCriteria);
+
+    // Collect all agent genomes and compute fitness scores
+    const allGenomes: AgentGenome[] = [];
+    const fitnessScores: Record<string, number> = {};
+
+    this.outcomes.forEach((outcome) => {
+      outcome.finalAgentStates.forEach((agentState) => {
+        // Build genome from agent state
+        const genome: AgentGenome = {
+          id: agentState.id,
+          basePersonalityId: agentState.personality.name,
+          generation: 0, // Initial generation
+          traits: {
+            aggression: agentState.stats.aggression,
+            cooperation: agentState.stats.cooperation,
+            empathy: agentState.stats.empathy,
+            curiosity: agentState.stats.curiosity,
+            riskTolerance: agentState.stats.riskTolerance,
+            cunning: 50, // Default value (not in base stats)
+            loyalty: 50,  // Default value (not in base stats)
+          },
+          meta: {
+            originalPersonality: agentState.personality.name,
+            simulationId: outcome.simulationId,
+            simulationName: outcome.simulationName,
+          },
+        };
+
+        allGenomes.push(genome);
+
+        // Compute fitness based on agent's performance
+        const stats: EvolutionAgentStats = {
+          resourcesCollected: agentState.inventory.food +
+                              agentState.inventory.water +
+                              agentState.inventory.material,
+          turnsSurvived: outcome.turns,
+          alliancesFormed: outcome.alliancesFormed, // Approximation
+          goalsCompleted: agentState.goals.filter(g => g.completed).length,
+          conflictsInitiated: Math.floor(outcome.totalDamageDealt / (outcome.survivors + 1)), // Approximation
+        };
+
+        const fitness = evolutionEngine.computeFitness(agentState, stats);
+        fitnessScores[genome.id] = fitness;
+      });
+    });
+
+    console.log(`[Evolution] Computed fitness for ${allGenomes.length} agents`);
+    console.log(`[Evolution] Fitness range: ${Math.min(...Object.values(fitnessScores)).toFixed(3)} - ${Math.max(...Object.values(fitnessScores)).toFixed(3)}`);
+
+    // Select top performers
+    const generationResult = evolutionEngine.selectTopGenomes(allGenomes, fitnessScores, topK);
+
+    console.log(`[Evolution] Selected top ${generationResult.topGenomes.length} genomes`);
+    console.log(`[Evolution] Average fitness: ${generationResult.averageFitness.toFixed(3)}`);
+
+    // Evolve next generation
+    const nextGeneration = evolutionEngine.evolveNextGeneration(
+      generationResult.topGenomes,
+      fitnessScores,
+      targetPopulation,
+      mutationRate,
+      Math.min(2, topK) // Preserve top 2 as elites
+    );
+
+    console.log(`[Evolution] Generated ${nextGeneration.length} genomes for next generation`);
+
+    return nextGeneration;
   }
 }

@@ -14,7 +14,7 @@ import { StateManager } from './state';
 import { LLMAgent, ScriptedAgent } from './agents';
 import { getPreset, getAllPresetNames, createGoalsFromPersonality } from './simulations';
 import { getPersonality, ALL_PERSONALITIES } from './agents/personalities';
-import { Position } from './schemas/types';
+import { Position, FitnessCriteria, AgentGenome } from './schemas/types';
 import { AnalyticsEngine } from './analytics';
 import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
 
@@ -893,6 +893,74 @@ app.post('/api/cluster/reset', (req, res) => {
   res.json({ message: 'Cluster reset' });
 });
 
+/**
+ * POST /api/evolution/next-generation
+ * Generate next generation of agent genomes using evolutionary algorithms
+ */
+app.post('/api/evolution/next-generation', (req, res) => {
+  try {
+    if (!simulationCluster) {
+      return res.status(400).json({ error: 'No cluster created. Run a cluster first.' });
+    }
+
+    const { fitnessCriteria, topK, mutationRate, populationSize } = req.body;
+
+    // Validate fitness criteria
+    if (!fitnessCriteria) {
+      return res.status(400).json({
+        error: 'fitnessCriteria is required',
+        example: {
+          survivalWeight: 1.0,
+          resourceWeight: 0.8,
+          cooperationWeight: 0.6,
+          aggressionWeight: -0.3,
+          goalCompletionWeight: 1.0,
+        },
+      });
+    }
+
+    // Set defaults
+    const criteria: FitnessCriteria = {
+      survivalWeight: fitnessCriteria.survivalWeight ?? 1.0,
+      resourceWeight: fitnessCriteria.resourceWeight ?? 0.8,
+      cooperationWeight: fitnessCriteria.cooperationWeight ?? 0.6,
+      aggressionWeight: fitnessCriteria.aggressionWeight ?? 0.0,
+      goalCompletionWeight: fitnessCriteria.goalCompletionWeight ?? 1.0,
+    };
+
+    const top = topK ?? 5;
+    const mutation = mutationRate ?? 0.1;
+
+    console.log(`[Evolution API] Generating next generation with criteria:`, criteria);
+    console.log(`[Evolution API] Top K: ${top}, Mutation rate: ${mutation}`);
+
+    // Generate next generation
+    const genomes = simulationCluster.generateNextGenerationConfigs(
+      criteria,
+      top,
+      mutation,
+      populationSize
+    );
+
+    const generationIndex = genomes[0]?.generation || 1;
+
+    res.json({
+      generationIndex,
+      genomes,
+      count: genomes.length,
+      fitnessCriteria: criteria,
+      parameters: {
+        topK: top,
+        mutationRate: mutation,
+        populationSize: genomes.length,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error generating next generation:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start server
 const PORT = process.env.PORT || 3001;
 
@@ -907,10 +975,9 @@ server.listen(PORT, () => {
 ║                                                       ║
 ║  API Documentation:                                   ║
 ║  - POST /api/simulation/create                        ║
-║  - POST /api/simulation/start                         ║
 ║  - POST /api/cluster/start                            ║
+║  - POST /api/evolution/next-generation                ║
 ║  - GET  /api/cluster/results                          ║
-║  - GET  /api/presets                                  ║
 ║  - GET  /api/analytics/metrics                        ║
 ║                                                       ║
 ╚═══════════════════════════════════════════════════════╝

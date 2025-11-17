@@ -451,3 +451,42 @@ export interface ReplayPlaybackState {
   totalTurns: number;
   replay: Replay | null;
 }
+
+/**
+ * Evolution System Types
+ */
+
+export interface FitnessCriteria {
+  survivalWeight: number;
+  resourceWeight: number;
+  cooperationWeight: number;
+  aggressionWeight: number; // can be positive or negative depending on experiment
+  goalCompletionWeight: number;
+}
+
+export interface AgentGenome {
+  id: string;
+  basePersonalityId?: string;
+  generation: number;
+  parentIds?: string[];
+  traits: {
+    aggression: number;
+    cooperation: number;
+    empathy: number;
+    curiosity: number;
+    riskTolerance: number;
+    cunning: number;
+    loyalty: number;
+  };
+  meta?: Record<string, any>;
+}
+
+export interface GenerationResult {
+  generationIndex: number;
+  genomes: AgentGenome[];
+  fitnessScores: Record<string, number>;
+  topGenomes: AgentGenome[];
+  averageFitness: number;
+  maxFitness: number;
+  minFitness: number;
+}
