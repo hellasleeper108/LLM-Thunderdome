@@ -3,7 +3,7 @@
  * Pre-configured scenarios for different simulation types
  */
 
-import { Personality, Goal, AgentStats } from '../schemas/types';
+import { Personality, Goal, AgentStats, AgentGenome } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface PresetConfig {
@@ -17,6 +17,8 @@ export interface PresetConfig {
   turnDuration: number;
   agentPersonalities: Personality[];
   globalGoals?: Goal[];
+  initialGenomes?: AgentGenome[]; // Optional: Use evolved genomes instead of personality templates
+  culturePackId?: string; // Optional: Apply cultural biases from a culture pack
 }
 
 /**

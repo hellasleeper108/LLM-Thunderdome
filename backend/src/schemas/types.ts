@@ -77,6 +77,8 @@ export interface AgentState {
   health: number;
   isAlive: boolean;
   allegiances: string[]; // IDs of allied agents
+  activePlan?: Plan; // Current plan being executed
+  planHistory: PlanHistory; // Historical record of all plans
 }
 
 export enum ActionType {
@@ -110,9 +112,11 @@ export interface Message {
   id: string;
   from: string;
   to: string;
-  content: string;
+  content: string; // Rendered content using faction dialect
+  semanticContent?: string; // Original semantic meaning (before dialect translation)
   type: 'request' | 'threat' | 'bargain' | 'alliance' | 'info' | 'other';
   timestamp: number;
+  factionId?: string; // Faction ID of sender (for dialect resolution)
 }
 
 export interface WorldState {
@@ -136,7 +140,7 @@ export interface EventLog {
   id: string;
   timestamp: number;
   turn: number;
-  type: 'action' | 'interaction' | 'resource_change' | 'dialogue' | 'state_update' | 'event';
+  type: 'action' | 'interaction' | 'resource_change' | 'dialogue' | 'state_update' | 'event' | 'religion_born' | 'ritual_performed';
   description: string;
   agentIds: string[];
   metadata?: Record<string, any>;
@@ -272,4 +276,219 @@ export interface SocialRelationship {
   weights: RelationshipWeights;
   lastUpdated: number;
   interactionCount: number;
+}
+
+/**
+ * Planning System Types
+ */
+
+export enum PlanStatus {
+  ACTIVE = 'active',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  ABANDONED = 'abandoned',
+}
+
+export interface PlanStep {
+  stepNumber: number;
+  action: Action;
+  expectedOutcome: string;
+  reasoning: string;
+  fallbackAction?: Action; // Backup if primary action fails
+}
+
+export interface Plan {
+  id: string;
+  agentId: string;
+  goalId: string; // Which goal this plan aims to achieve
+  steps: PlanStep[];
+  currentStepIndex: number;
+  status: PlanStatus;
+  createdAt: number; // Timestamp
+  createdAtTurn: number; // Turn number when plan was created
+  completedAt?: number; // Timestamp when completed/failed/abandoned
+  expectedDuration: number; // Turns (2-6)
+  actualDuration?: number; // Actual turns taken
+  successRate: number; // % of steps successfully executed (0-100)
+  metadata?: {
+    priority: 'high' | 'medium' | 'low';
+    adaptability: number; // How easily plan can adapt to changes (0-100)
+    riskLevel: number; // How risky the plan is (0-100)
+  };
+}
+
+export interface PlanHistory {
+  completedPlans: Plan[];
+  failedPlans: Plan[];
+  abandonedPlans: Plan[];
+  totalPlansCreated: number;
+  averageSuccessRate: number;
+  preferredPlanLength: number; // Agent's preferred number of steps
+}
+
+/**
+ * World Events System Types
+ */
+
+export enum WorldEventType {
+  STORM = 'storm',
+  ANOMALY = 'anomaly',
+  RADIATION_ZONE = 'radiation_zone',
+  RESOURCE_BOON = 'resource_boon',
+  CHAOS_SPIKE = 'chaos_spike',
+  SCARCITY_CYCLE = 'scarcity_cycle',
+}
+
+export enum EventSeverity {
+  MINOR = 'minor',
+  MODERATE = 'moderate',
+  SEVERE = 'severe',
+  CATASTROPHIC = 'catastrophic',
+}
+
+export interface WorldEvent {
+  id: string;
+  type: WorldEventType;
+  severity: EventSeverity;
+  epicenter: Position; // Center of event
+  radius: number; // How far the event affects (tiles)
+  duration: number; // How many turns the event lasts
+  createdAt: number; // Timestamp
+  createdAtTurn: number; // Turn number
+  expiresAtTurn: number; // When event ends
+  active: boolean;
+  effects: EventEffects;
+  metadata?: Record<string, any>;
+}
+
+export interface EventEffects {
+  // Tile modifications
+  tileChanges?: {
+    convertToType?: TileType; // Change affected tiles to this type
+    damageMultiplier?: number; // Multiplier for damage in area (1.0 = normal)
+    resourceMultiplier?: number; // Multiplier for resource values
+    movementCost?: number; // Extra energy cost to move through area
+  };
+
+  // Agent debuffs/buffs
+  agentEffects?: {
+    healthDamage?: number; // Damage per turn in area
+    energyDrain?: number; // Energy loss per turn
+    statModifiers?: Partial<AgentStats>; // Temporary stat changes
+    visionReduction?: number; // Reduce vision radius
+    confused?: boolean; // Random movement
+    buffed?: boolean; // Positive effects
+  };
+
+  // World rule changes
+  worldRules?: {
+    disableGathering?: boolean; // Can't gather resources
+    disableCommunication?: boolean; // Can't send messages
+    disableAlliances?: boolean; // Can't form alliances
+    doubleResourceCost?: boolean; // Actions cost 2x energy
+    globalFearIncrease?: number; // Increase all agents' fear
+    globalAggressionIncrease?: number; // Increase all agents' aggression
+  };
+}
+
+export interface ActiveEventEffect {
+  eventId: string;
+  eventType: WorldEventType;
+  affectedAgentIds: string[];
+  affectedTilePositions: Position[];
+  appliedAt: number;
+  expiresAt: number;
+}
+
+/**
+ * Replay System Types
+ */
+
+export interface ReplayFrame {
+  turn: number;
+  timestamp: number;
+  worldState: {
+    tiles: Tile[][];
+    agents: AgentState[];
+    activeEvents: WorldEvent[];
+  };
+  actions: ActionResult[];
+  messages: Message[];
+  metadata?: {
+    totalAgentsAlive: number;
+    totalResourcesGathered: number;
+    alliancesActive: number;
+  };
+}
+
+export interface ReplayMetadata {
+  id: string;
+  simulationName: string;
+  createdAt: number;
+  totalTurns: number;
+  totalDuration: number; // milliseconds
+  agentCount: number;
+  worldDimensions: { width: number; height: number };
+  presetUsed?: string;
+  winner?: string; // Agent ID if there's a winner
+  finalStats?: {
+    survivingAgents: number;
+    totalActions: number;
+    totalNegotiations: number;
+    totalAlliances: number;
+    totalCombats: number;
+  };
+}
+
+export interface Replay {
+  metadata: ReplayMetadata;
+  frames: ReplayFrame[];
+  version: string; // For compatibility tracking
+}
+
+export interface ReplayPlaybackState {
+  currentTurn: number;
+  isPlaying: boolean;
+  playbackSpeed: number; // 0.5x, 1x, 2x, etc.
+  totalTurns: number;
+  replay: Replay | null;
+}
+
+/**
+ * Evolution System Types
+ */
+
+export interface FitnessCriteria {
+  survivalWeight: number;
+  resourceWeight: number;
+  cooperationWeight: number;
+  aggressionWeight: number; // can be positive or negative depending on experiment
+  goalCompletionWeight: number;
+}
+
+export interface AgentGenome {
+  id: string;
+  basePersonalityId?: string;
+  generation: number;
+  parentIds?: string[];
+  traits: {
+    aggression: number;
+    cooperation: number;
+    empathy: number;
+    curiosity: number;
+    riskTolerance: number;
+    cunning: number;
+    loyalty: number;
+  };
+  meta?: Record<string, any>;
+}
+
+export interface GenerationResult {
+  generationIndex: number;
+  genomes: AgentGenome[];
+  fitnessScores: Record<string, number>;
+  topGenomes: AgentGenome[];
+  averageFitness: number;
+  maxFitness: number;
+  minFitness: number;
 }

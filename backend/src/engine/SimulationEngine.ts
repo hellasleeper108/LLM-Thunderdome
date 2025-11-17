@@ -10,6 +10,13 @@ import { TraitDrift } from '../agents/TraitDrift';
 import { World } from '../world/World';
 import { EventLogger } from '../logging/EventLogger';
 import { NegotiationEngine } from './NegotiationEngine';
+import { PlanningEngine } from '../agents/planning/PlanningEngine';
+import { WorldEventsManager } from '../world/events/WorldEvents';
+import { ReplayRecorder } from '../logging/ReplayRecorder';
+import { getStanBridge } from '../stan';
+import { BeliefSystem, Belief, Ritual } from '../civilization/BeliefSystem';
+import { FactionManager } from '../civilization/FactionManager';
+import { LanguageEngine } from '../language/LanguageEngine';
 import {
   Action,
   ActionType,
@@ -23,6 +30,12 @@ import {
   NegotiationProtocol,
   ResourceOffer,
   Alliance,
+  PlanStatus,
+  WorldEvent,
+  AgentStats,
+  Replay,
+  Tile,
+  EventLog,
 } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -31,6 +44,8 @@ export interface EngineConfig {
   maxTurns: number;
   autoAdvance?: boolean; // Auto-advance turns
   visionRadius?: number; // How far agents can see
+  eventFrequency?: number; // How often events spawn (0-1)
+  eventSpawnInterval?: number; // Try to spawn event every N turns
 }
 
 export type SimulationStatus = 'idle' | 'running' | 'paused' | 'completed';
@@ -43,6 +58,12 @@ export class SimulationEngine {
   private negotiationEngine: NegotiationEngine;
   private allianceManager: AllianceManager;
   private traitDrift: TraitDrift;
+  private planningEngine: PlanningEngine;
+  private worldEventsManager: WorldEventsManager;
+  private replayRecorder: ReplayRecorder;
+  private beliefSystem: BeliefSystem;
+  private factionManager: FactionManager | null;
+  private languageEngine: LanguageEngine;
   private config: Required<EngineConfig>;
   private currentTurn: number;
   private status: SimulationStatus;
@@ -61,18 +82,56 @@ export class SimulationEngine {
     this.negotiationEngine = new NegotiationEngine(this.socialGraph);
     this.allianceManager = new AllianceManager(this.socialGraph);
     this.traitDrift = new TraitDrift(this.socialGraph, 1.0); // 1.0 = normal drift rate
+    this.planningEngine = new PlanningEngine();
+
+    // Initialize world events manager
+    // Note: We'll get world dimensions from the world object later
+    // For now, use reasonable defaults
+    this.worldEventsManager = new WorldEventsManager(20, 20, {
+      eventFrequency: config.eventFrequency ?? 0.15,
+      maxActiveEvents: 3,
+      allowCatastrophicEvents: true,
+    });
+
+    // Initialize belief system for emergent religions
+    this.beliefSystem = new BeliefSystem(0.7); // 0.7 = event drama threshold
+    this.factionManager = null; // Will be set externally if factions are enabled
+
+    // Initialize language engine for dialect evolution
+    this.languageEngine = new LanguageEngine({
+      mutationRate: 0.1, // 10% chance of mutation per turn
+      variantsPerConcept: 5,
+      mergeBlendRate: 0.3,
+    });
 
     this.config = {
       turnDuration: config.turnDuration,
       maxTurns: config.maxTurns,
       autoAdvance: config.autoAdvance ?? false,
       visionRadius: config.visionRadius ?? 3,
+      eventFrequency: config.eventFrequency ?? 0.15,
+      eventSpawnInterval: config.eventSpawnInterval ?? 5,
     };
     this.currentTurn = 0;
     this.status = 'idle';
     this.turnTimer = null;
     this.messages = [];
     this.actionResults = [];
+
+    // Initialize replay recorder
+    const worldDimensions = this.world.getDimensions();
+    this.replayRecorder = new ReplayRecorder(
+      `Simulation-${Date.now()}`, // simulationName
+      worldDimensions.width,
+      worldDimensions.height,
+      0, // agentCount - will be updated as agents are added
+      undefined, // presetUsed - can be set later
+      {
+        autoSave: false,
+        compressionEnabled: false,
+        maxFrames: config.maxTurns,
+      }
+    );
   }
 
   /**
@@ -114,6 +173,8 @@ export class SimulationEngine {
     }
 
     this.status = 'running';
+    this.replayRecorder.startRecording(); // Start recording replay
+
     this.logger.logEvent({
       type: 'state_update',
       description: 'Simulation started',
@@ -178,10 +239,26 @@ export class SimulationEngine {
     this.negotiationEngine.reset();
     this.allianceManager.reset();
     this.traitDrift.reset();
+    this.worldEventsManager.reset();
     this.status = 'idle';
 
     // Reset all agents
     this.agents.clear();
+
+    // Reinitialize replay recorder
+    const worldDimensions = this.world.getDimensions();
+    this.replayRecorder = new ReplayRecorder(
+      `Simulation-${Date.now()}`, // new simulationName
+      worldDimensions.width,
+      worldDimensions.height,
+      0, // agentCount
+      undefined, // presetUsed
+      {
+        autoSave: false,
+        compressionEnabled: false,
+        maxFrames: this.config.maxTurns,
+      }
+    );
 
     this.logger.logEvent({
       type: 'state_update',
@@ -209,6 +286,9 @@ export class SimulationEngine {
     // Clear previous turn's action results
     this.actionResults = [];
 
+    // Phase 0: Execute STAN god-mode commands
+    this.executeStanCommands();
+
     // Phase 1: All agents observe
     const observations = this.generateObservations();
 
@@ -218,23 +298,41 @@ export class SimulationEngine {
     // Phase 3: Resolve all actions
     await this.resolveActions(actions);
 
-    // Phase 4: Update world state
+    // Phase 4: Spawn and update world events
+    this.updateWorldEvents();
+
+    // Phase 5: Apply event effects to agents
+    this.applyEventEffects();
+
+    // Phase 6: Update world state
     this.updateWorldState();
 
-    // Phase 5: Process events
+    // Phase 7: Process events
     this.processEvents();
 
-    // Phase 6: Update alliances
+    // Phase 8: Update alliances
     this.updateAlliances();
 
-    // Phase 7: Apply trait drift
+    // Phase 9: Apply trait drift
     this.applyTraitDrift();
+
+    // Phase 10: Evaluate beliefs and perform rituals
+    this.evaluateBeliefsAndRituals();
+
+    // Phase 11: Advance language drift
+    this.languageEngine.advanceTurn(this.currentTurn);
 
     this.logger.logEvent({
       type: 'state_update',
       description: `Turn ${this.currentTurn} completed`,
       agentIds: [],
     });
+
+    // Send STAN turn summary event
+    this.sendStanTurnSummary();
+
+    // Record turn for replay
+    this.recordTurnToReplay();
 
     // Schedule next turn if auto-advancing
     if (this.config.autoAdvance && this.status === 'running') {
@@ -329,14 +427,86 @@ export class SimulationEngine {
 
   /**
    * Collect actions from all agents
+   * Uses planning system: if agent has active plan, execute next step
+   * Otherwise, generate new plan
    */
   private async collectActions(observations: Map<string, Observation>): Promise<Action[]> {
     const actionPromises: Promise<Action>[] = [];
 
     for (const [agentId, agent] of this.agents.entries()) {
       const observation = observations.get(agentId);
-      if (observation) {
-        actionPromises.push(agent.decideAction(observation));
+      if (!observation) continue;
+
+      const state = agent.getState();
+      if (!state.isAlive) continue;
+
+      // Planning system integration
+      const activePlan = agent.getActivePlan();
+      if (activePlan && activePlan.status === PlanStatus.ACTIVE) {
+        // Agent has active plan - execute next step
+        const planAction = this.planningEngine.executePlanStep(state);
+
+        if (planAction) {
+          // Log plan step execution
+          this.logger.logEvent({
+            type: 'action',
+            description: `${state.name} executing plan step ${activePlan.currentStepIndex + 1}/${activePlan.steps.length}: ${planAction.type}`,
+            agentIds: [agentId],
+            metadata: {
+              planId: activePlan.id,
+              stepNumber: activePlan.currentStepIndex + 1,
+              actionType: planAction.type,
+            },
+          });
+
+          actionPromises.push(Promise.resolve(planAction));
+        } else {
+          // Plan is complete or invalid - fall back to normal decision
+          actionPromises.push(agent.decideAction(observation));
+        }
+      } else {
+        // No active plan - generate new plan
+        const newPlan = this.planningEngine.generatePlan(
+          state,
+          state.goals,
+          this.world,
+          this.currentTurn
+        );
+
+        if (newPlan) {
+          // Set the new plan
+          agent.setActivePlan(newPlan);
+
+          // Log plan creation
+          this.logger.logEvent({
+            type: 'state_update',
+            description: `${state.name} created new plan: ${newPlan.steps.length} steps to achieve "${state.goals.find(g => g.id === newPlan.goalId)?.description || 'goal'}"`,
+            agentIds: [agentId],
+            metadata: {
+              planId: newPlan.id,
+              goalId: newPlan.goalId,
+              steps: newPlan.steps.map(s => ({
+                stepNumber: s.stepNumber,
+                action: s.action.type,
+                reasoning: s.reasoning,
+              })),
+              priority: newPlan.metadata?.priority,
+              riskLevel: newPlan.metadata?.riskLevel,
+            },
+          });
+
+          // Execute first step
+          const firstAction = this.planningEngine.executePlanStep(state);
+          if (firstAction) {
+            actionPromises.push(Promise.resolve(firstAction));
+          } else {
+            // Fallback to normal decision
+            actionPromises.push(agent.decideAction(observation));
+          }
+        } else {
+          // Could not generate plan - use normal decision making
+          actionPromises.push(agent.decideAction(observation));
+        }
       }
     }
 
@@ -451,6 +621,32 @@ export class SimulationEngine {
       typeof action.target === 'string' ? action.target : undefined,
       { effects }
     );
+
+    // Advance plan if agent has active plan
+    const activePlan = agent.getActivePlan();
+    if (activePlan && activePlan.status === PlanStatus.ACTIVE) {
+      // Get mutable state for plan advancement
+      const mutableState = agent.getState();
+      this.planningEngine.advancePlan(mutableState, success);
+
+      // Update agent's plan after advancement
+      agent.setActivePlan(mutableState.activePlan);
+
+      // Log plan completion if finished
+      const updatedPlan = agent.getActivePlan();
+      if (updatedPlan && updatedPlan.status === PlanStatus.COMPLETED) {
+        this.logger.logEvent({
+          type: 'state_update',
+          description: `${state.name} completed plan: ${updatedPlan.steps.length} steps with ${updatedPlan.successRate.toFixed(1)}% success rate`,
+          agentIds: [action.agentId],
+          metadata: {
+            planId: updatedPlan.id,
+            successRate: updatedPlan.successRate,
+            actualDuration: updatedPlan.actualDuration,
+          },
+        });
+      }
+    }
 
     return {
       success,
@@ -879,6 +1075,9 @@ export class SimulationEngine {
       }
     }
 
+    // Send STAN negotiation event
+    this.negotiationEngine.sendStanNegotiationEvent(offer, outcome, negotiator, targetState);
+
     // Log negotiation event
     this.logger.logEvent({
       type: 'interaction',
@@ -1178,6 +1377,164 @@ export class SimulationEngine {
   }
 
   /**
+   * Update world events (spawn new events, expire old ones)
+   */
+  private updateWorldEvents(): void {
+    // Update active events (expire old ones)
+    this.worldEventsManager.updateEvents(this.currentTurn);
+
+    // Try to spawn new event every N turns
+    if (this.currentTurn % this.config.eventSpawnInterval === 0) {
+      const newEvent = this.worldEventsManager.trySpawnEvent(this.currentTurn);
+
+      if (newEvent) {
+        // Log event creation
+        this.logger.logEvent({
+          type: 'event',
+          description: `${newEvent.severity.toUpperCase()} ${newEvent.type.replace('_', ' ').toUpperCase()} spawned at (${newEvent.epicenter.x}, ${newEvent.epicenter.y}) with radius ${newEvent.radius}`,
+          agentIds: [],
+          metadata: {
+            eventId: newEvent.id,
+            eventType: newEvent.type,
+            severity: newEvent.severity,
+            epicenter: newEvent.epicenter,
+            radius: newEvent.radius,
+            duration: newEvent.duration,
+            expiresAtTurn: newEvent.expiresAtTurn,
+            effects: newEvent.effects,
+          },
+        });
+      }
+    }
+  }
+
+  /**
+   * Apply effects from active world events to agents
+   */
+  private applyEventEffects(): void {
+    const activeEvents = this.worldEventsManager.getActiveEvents();
+
+    if (activeEvents.length === 0) {
+      return;
+    }
+
+    // Track which agents are affected by which events
+    const affectedAgents = new Map<string, WorldEvent[]>();
+
+    // Check each agent's position against active events
+    for (const [agentId, agent] of this.agents.entries()) {
+      const state = agent.getState();
+      if (!state.isAlive) continue;
+
+      const eventsAffectingAgent = this.worldEventsManager.getEventsAffectingPosition(state.position);
+
+      if (eventsAffectingAgent.length > 0) {
+        affectedAgents.set(agentId, eventsAffectingAgent);
+
+        for (const event of eventsAffectingAgent) {
+          this.applyEventEffectToAgent(agent, event);
+        }
+      }
+    }
+
+    // Apply global event rules
+    for (const event of activeEvents) {
+      if (event.effects.worldRules?.globalAggressionIncrease) {
+        for (const agent of this.agents.values()) {
+          const state = agent.getState();
+          if (state.isAlive) {
+            agent.updateStats({
+              aggression: state.stats.aggression + event.effects.worldRules.globalAggressionIncrease,
+            });
+          }
+        }
+      }
+
+      if (event.effects.worldRules?.globalFearIncrease) {
+        // Fear isn't a direct stat, but we can increase risk-aversion
+        for (const agent of this.agents.values()) {
+          const state = agent.getState();
+          if (state.isAlive) {
+            agent.updateStats({
+              riskTolerance: Math.max(0, state.stats.riskTolerance - event.effects.worldRules.globalFearIncrease),
+            });
+          }
+        }
+      }
+    }
+
+    // Log event impacts
+    for (const [agentId, events] of affectedAgents.entries()) {
+      const agent = this.agents.get(agentId);
+      if (!agent) continue;
+
+      const state = agent.getState();
+      const eventDescriptions = events.map(e => `${e.type} (${e.severity})`).join(', ');
+
+      this.logger.logEvent({
+        type: 'event',
+        description: `${state.name} affected by: ${eventDescriptions}`,
+        agentIds: [agentId],
+        metadata: {
+          events: events.map(e => ({
+            eventId: e.id,
+            type: e.type,
+            severity: e.severity,
+          })),
+          position: state.position,
+          health: state.health,
+          energy: state.stats.energy,
+        },
+      });
+    }
+  }
+
+  /**
+   * Apply specific event effects to an agent
+   */
+  private applyEventEffectToAgent(agent: BaseAgent, event: WorldEvent): void {
+    const state = agent.getState();
+    const effects = event.effects;
+
+    // Apply agent effects
+    if (effects.agentEffects) {
+      // Health damage
+      if (effects.agentEffects.healthDamage) {
+        agent.takeDamage(effects.agentEffects.healthDamage);
+      }
+
+      // Energy drain
+      if (effects.agentEffects.energyDrain) {
+        agent.updateStats({
+          energy: Math.max(0, state.stats.energy - effects.agentEffects.energyDrain),
+        });
+      }
+
+      // Stat modifiers
+      if (effects.agentEffects.statModifiers) {
+        const currentStats = state.stats;
+        const modifiers: Partial<AgentStats> = {};
+
+        for (const [stat, value] of Object.entries(effects.agentEffects.statModifiers)) {
+          if (value !== undefined) {
+            const statKey = stat as keyof AgentStats;
+            modifiers[statKey] = currentStats[statKey] + value;
+          }
+        }
+
+        agent.updateStats(modifiers);
+      }
+    }
+
+    // Update event metadata
+    if (event.metadata) {
+      event.metadata.affectedAgentCount = (event.metadata.affectedAgentCount || 0) + 1;
+      event.metadata.totalDamageDealt =
+        (event.metadata.totalDamageDealt || 0) + (effects.agentEffects?.healthDamage || 0);
+    }
+  }
+
+  /**
    * Process world events (storms, anomalies, boons)
    */
   private processEvents(): void {
@@ -1431,6 +1788,8 @@ export class SimulationEngine {
    */
   private complete(): void {
     this.status = 'completed';
+    this.replayRecorder.stopRecording(); // Stop recording replay
+
     if (this.turnTimer) {
       clearTimeout(this.turnTimer);
       this.turnTimer = null;
@@ -1441,6 +1800,24 @@ export class SimulationEngine {
       description: 'Simulation completed',
       agentIds: [],
     });
+  }
+
+  /**
+   * Record current turn state to replay
+   */
+  private recordTurnToReplay(): void {
+    const tiles = this.world.getAllTiles();
+    const agents = Array.from(this.agents.values()).map(a => a.getState());
+    const activeEvents = this.worldEventsManager.getActiveEvents();
+
+    this.replayRecorder.recordTurn(
+      this.currentTurn,
+      tiles,
+      agents,
+      activeEvents,
+      this.actionResults,
+      this.messages
+    );
   }
 
   /**
@@ -1502,5 +1879,461 @@ export class SimulationEngine {
    */
   getTraitDrift(): TraitDrift {
     return this.traitDrift;
+  }
+
+  /**
+   * Execute pending STAN god-mode commands
+   */
+  private executeStanCommands(): void {
+    try {
+      const { getStanCommandExecutor } = require('../stan');
+      const executor = getStanCommandExecutor();
+
+      // Check if there are pending commands
+      const pending = executor.getPending();
+      if (pending.length === 0) {
+        return;
+      }
+
+      console.log(`[SimulationEngine] Executing ${pending.length} STAN commands...`);
+
+      // Build execution context
+      const context = {
+        engine: this,
+        world: this.world,
+        factions: this.factionManager,
+        laws: this.lawSystem,
+        beliefs: this.beliefSystem,
+        logger: this.logger,
+      };
+
+      // Execute all pending commands
+      const results = executor.executePendingCommands(context);
+
+      // Log execution summary
+      const successCount = results.filter(r => r.success).length;
+      const failureCount = results.filter(r => !r.success).length;
+
+      console.log(
+        `[SimulationEngine] STAN commands executed: ${successCount} succeeded, ${failureCount} failed`
+      );
+
+      // Send STAN event about command execution
+      try {
+        const stan = getStanBridge();
+        const event = stan.createEvent('AGENT_EVENT', {
+          message: `Executed ${results.length} god-mode commands`,
+          results: results.map(r => ({
+            success: r.success,
+            message: r.message,
+            effects: r.effects,
+          })),
+        });
+        stan.sendEvent(event);
+      } catch (error) {
+        // STAN may not be enabled, that's okay
+      }
+    } catch (error) {
+      console.error('[SimulationEngine] Error executing STAN commands:', error);
+    }
+  }
+
+  /**
+   * Send STAN turn summary event
+   * Sends a summary of the turn to the external STAN overseer system
+   */
+  private sendStanTurnSummary(): void {
+    try {
+      const stan = getStanBridge();
+      const state = this.getState();
+
+      // Calculate key metrics for the turn
+      const aliveAgents = state.agents.filter(a => a.isAlive);
+      const deadAgents = state.agents.filter(a => !a.isAlive);
+
+      // Get recent key events from action results
+      const attacks = this.actionResults.filter(r => r.action.type === ActionType.ATTACK);
+      const negotiations = this.actionResults.filter(
+        r => r.action.type === ActionType.NEGOTIATE
+      );
+      const allianceChanges = this.actionResults.filter(
+        r => r.action.type === ActionType.FORM_ALLIANCE || r.action.type === ActionType.BREAK_ALLIANCE
+      );
+
+      // Build turn summary payload
+      const event = stan.createEvent('TURN_SUMMARY', {
+        turn: this.currentTurn,
+        status: this.status,
+        agentCount: {
+          total: state.agents.length,
+          alive: aliveAgents.length,
+          dead: deadAgents.length,
+        },
+        turnEvents: {
+          totalActions: this.actionResults.length,
+          attacks: attacks.length,
+          negotiations: negotiations.length,
+          allianceChanges: allianceChanges.length,
+          messagesExchanged: state.messages.length,
+        },
+        worldState: {
+          totalResources: this.calculateTotalWorldResources(),
+          activeEvents: this.worldEventsManager?.getActiveEvents().length || 0,
+        },
+        socialMetrics: {
+          activeAlliances: this.allianceManager.getAlliances().length,
+          avgTrust: this.calculateAverageTrust(),
+          avgFear: this.calculateAverageFear(),
+        },
+        topAgents: aliveAgents
+          .sort((a, b) => b.health - a.health)
+          .slice(0, 3)
+          .map(a => ({
+            id: a.id,
+            name: a.name,
+            health: a.health,
+            personality: a.personality.name,
+          })),
+      });
+
+      stan.sendEvent(event);
+    } catch (error) {
+      // Don't let STAN errors break the simulation
+      console.error('[SimulationEngine] Failed to send STAN turn summary:', error);
+    }
+  }
+
+  /**
+   * Calculate total resources in the world
+   */
+  private calculateTotalWorldResources(): number {
+    const allTiles = this.world.getAllTiles();
+    let total = 0;
+
+    for (const row of allTiles) {
+      for (const tile of row) {
+        if (tile.type.startsWith('resource_') && tile.value) {
+          total += tile.value;
+        }
+      }
+    }
+
+    return total;
+  }
+
+  /**
+   * Calculate average trust across all agents
+   */
+  private calculateAverageTrust(): number {
+    const relationships = this.socialGraph.getAllRelationshipData();
+    if (relationships.length === 0) return 0;
+
+    const totalTrust = relationships.reduce((sum, rel) => sum + rel.weights.trust, 0);
+    return totalTrust / relationships.length;
+  }
+
+  /**
+   * Calculate average fear across all agents
+   */
+  private calculateAverageFear(): number {
+    const relationships = this.socialGraph.getAllRelationshipData();
+    if (relationships.length === 0) return 0;
+
+    const totalFear = relationships.reduce((sum, rel) => sum + rel.weights.fear, 0);
+    return totalFear / relationships.length;
+  }
+
+  /**
+   * Get replay data
+   */
+  getReplay(): Replay {
+    return this.replayRecorder.getReplay();
+  }
+
+  /**
+   * Export replay as JSON string
+   */
+  exportReplay(): string {
+    return this.replayRecorder.exportReplay();
+  }
+
+  /**
+   * Get replay recorder (for advanced queries)
+   */
+  getReplayRecorder(): ReplayRecorder {
+    return this.replayRecorder;
+  }
+
+  /**
+   * Set faction manager (for belief system and language integration)
+   */
+  setFactionManager(factionManager: FactionManager): void {
+    this.factionManager = factionManager;
+
+    // Initialize dialects for all existing factions
+    const factions = factionManager.listFactions();
+    factions.forEach(faction => {
+      this.languageEngine.initializeFactionDialect(faction.id);
+    });
+
+    console.log(`[SimulationEngine] Initialized dialects for ${factions.length} faction(s)`);
+  }
+
+  /**
+   * Get belief system
+   */
+  getBeliefSystem(): BeliefSystem {
+    return this.beliefSystem;
+  }
+
+  /**
+   * Get language engine
+   */
+  getLanguageEngine(): LanguageEngine {
+    return this.languageEngine;
+  }
+
+  /**
+   * Translate message content using faction dialects
+   * Replaces semantic concepts with faction-specific variants
+   */
+  private translateMessage(content: string, factionId: string | null): string {
+    if (!factionId) return content;
+
+    // Simple replacement of known concepts
+    // In practice, you might want more sophisticated parsing
+    let translated = content;
+
+    // Common concepts that might appear in messages
+    const concepts = [
+      'food', 'water', 'material', 'ally', 'enemy', 'attack', 'defend',
+      'trade', 'alliance', 'faction', 'leader', 'territory', 'danger',
+      'peace', 'war', 'trust', 'betrayal', 'honor', 'survival', 'victory'
+    ];
+
+    concepts.forEach(concept => {
+      const phrase = this.languageEngine.getPhrase(factionId, concept);
+      // Case-insensitive replacement
+      const regex = new RegExp(`\\b${concept}\\b`, 'gi');
+      translated = translated.replace(regex, phrase);
+    });
+
+    return translated;
+  }
+
+  /**
+   * Phase 10: Evaluate beliefs and perform rituals
+   * Checks for dramatic events that could spawn new beliefs
+   * Evaluates ritual triggers and applies effects
+   */
+  private evaluateBeliefsAndRituals(): void {
+    // Skip if no factions (beliefs require faction context)
+    if (!this.factionManager) {
+      return;
+    }
+
+    // Check for dramatic events that could spawn beliefs
+    this.checkForBeliefSpawningEvents();
+
+    // Evaluate and perform rituals
+    this.evaluateRitualTriggers();
+  }
+
+  /**
+   * Check recent events for belief-spawning drama
+   */
+  private checkForBeliefSpawningEvents(): void {
+    if (!this.factionManager) return;
+
+    const recentLogs = this.logger.getLogsForTurn(this.currentTurn);
+    const factions = this.factionManager.listFactions();
+
+    // Check for dramatic events
+    for (const log of recentLogs) {
+      const isDramatic = this.isEventDramatic(log);
+
+      if (isDramatic) {
+        // Find factions involved in the event
+        const involvedFactions = factions.filter(faction =>
+          log.agentIds.some(agentId => faction.members.has(agentId))
+        );
+
+        if (involvedFactions.length > 0) {
+          // Spawn a new belief!
+          const belief = this.beliefSystem.createBeliefFromEvent(
+            log,
+            involvedFactions
+          );
+
+          // Log the religious event
+          this.logger.logEvent({
+            type: 'religion_born',
+            description: `A new belief "${belief.name}" has emerged among ${involvedFactions.length} faction(s)`,
+            agentIds: log.agentIds,
+            metadata: {
+              beliefId: belief.id,
+              beliefName: belief.name,
+              factionIds: involvedFactions.map(f => f.id),
+              originEvent: log.type,
+              zeal: belief.zeal,
+            },
+          });
+
+          // Create default rituals for the new belief
+          this.createDefaultRituals(belief);
+        }
+      }
+    }
+  }
+
+  /**
+   * Determine if an event is dramatic enough to spawn a belief
+   */
+  private isEventDramatic(log: EventLog): boolean {
+    // Multiple agents involved = more dramatic
+    if (log.agentIds.length >= 3) return true;
+
+    // Specific event types are dramatic
+    const dramaticTypes = ['death', 'disaster', 'alliance', 'conflict', 'catastrophe'];
+    if (dramaticTypes.some(type => log.type.toLowerCase().includes(type))) {
+      return true;
+    }
+
+    // Check metadata for dramatic indicators
+    if (log.metadata) {
+      if (log.metadata.severity === 'high' || log.metadata.severity === 'critical') {
+        return true;
+      }
+      if (log.metadata.casualties && log.metadata.casualties > 1) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Create default rituals for a new belief
+   */
+  private createDefaultRituals(belief: Belief): void {
+    // Death ritual (if belief has death-related tenets)
+    if (belief.name.toLowerCase().includes('vigil') || belief.name.toLowerCase().includes('death')) {
+      this.beliefSystem.registerRitual(belief.id, {
+        name: 'Remembrance Ceremony',
+        beliefId: belief.id,
+        triggerCondition: 'DEATH_EVENT',
+        actions: ['Gather in circle', 'Share memories', 'Offer resources to the fallen'],
+        mechanicalEffects: {
+          moraleBoost: 5,
+          cohesionBoost: 0.05,
+        },
+        triggerData: { cooldown: 3 },
+      });
+    }
+
+    // Alliance ritual
+    if (belief.name.toLowerCase().includes('united') || belief.name.toLowerCase().includes('path')) {
+      this.beliefSystem.registerRitual(belief.id, {
+        name: 'Unity Oath',
+        beliefId: belief.id,
+        triggerCondition: 'ALLIANCE_FORMED',
+        actions: ['Exchange symbols', 'Vow cooperation', 'Celebrate together'],
+        mechanicalEffects: {
+          cooperationDelta: 5,
+          cohesionBoost: 0.1,
+        },
+        triggerData: { cooldown: 5 },
+      });
+    }
+
+    // Disaster ritual
+    if (belief.name.toLowerCase().includes('tempest') || belief.name.toLowerCase().includes('storm')) {
+      this.beliefSystem.registerRitual(belief.id, {
+        name: 'Storm Dance',
+        beliefId: belief.id,
+        triggerCondition: 'DISASTER',
+        actions: ['Dance wildly', 'Embrace chaos', 'Scatter resources'],
+        mechanicalEffects: {
+          energyBoost: 10,
+          aggressionDelta: -5,
+        },
+        triggerData: { cooldown: 4 },
+      });
+    }
+  }
+
+  /**
+   * Evaluate ritual triggers and perform rituals
+   */
+  private evaluateRitualTriggers(): void {
+    if (!this.factionManager) return;
+
+    const factions = this.factionManager.listFactions();
+    const recentLogs = this.logger.getLogsForTurn(this.currentTurn);
+
+    // Count recent dramatic events
+    const recentDeaths = recentLogs.filter(l =>
+      l.type === 'action' && l.description.toLowerCase().includes('death')
+    ).length;
+
+    const alliancesFormed = recentLogs.filter(l =>
+      l.type === 'interaction' && l.description.toLowerCase().includes('alliance')
+    ).length;
+
+    const disasters = recentLogs.filter(l => l.type === 'event').length;
+
+    // Build world state summary
+    const worldState = {
+      turn: this.currentTurn,
+      totalResources: this.calculateTotalWorldResources(),
+      recentDeaths,
+      alliancesFormed,
+      disasters,
+    };
+
+    // Check each faction for triggered rituals
+    for (const faction of factions) {
+      const rituals = this.beliefSystem.getRitualsForFaction(faction.id);
+      const triggeredRituals = this.beliefSystem.evaluateRitualTriggers(
+        worldState,
+        recentLogs
+      );
+
+      // Perform triggered rituals
+      for (const ritual of triggeredRituals) {
+        // Only perform if ritual belongs to this faction
+        if (rituals.some(r => r.id === ritual.id)) {
+          this.performRitual(ritual, faction);
+        }
+      }
+    }
+  }
+
+  /**
+   * Perform a ritual for a faction
+   */
+  private performRitual(ritual: Ritual, faction: any): void {
+    const agents = Array.from(this.agents.values());
+
+    // Apply ritual effects
+    this.beliefSystem.applyRitualEffects(ritual, faction, agents);
+
+    // Log the ritual performance
+    const participantIds = Array.from(faction.members);
+
+    this.logger.logEvent({
+      type: 'ritual_performed',
+      description: `Faction ${faction.name} performed the "${ritual.name}" ritual`,
+      agentIds: participantIds,
+      metadata: {
+        ritualId: ritual.id,
+        ritualName: ritual.name,
+        factionId: faction.id,
+        effects: ritual.mechanicalEffects,
+        actions: ritual.actions,
+      },
+    });
+
+    console.log(`[SimulationEngine] Ritual "${ritual.name}" performed by faction ${faction.name}`);
   }
 }

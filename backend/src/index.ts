@@ -13,8 +13,15 @@ import { EventLogger } from './logging';
 import { StateManager } from './state';
 import { LLMAgent, ScriptedAgent } from './agents';
 import { getPreset, getAllPresetNames, createGoalsFromPersonality } from './simulations';
-import { getPersonality, ALL_PERSONALITIES } from './agents/personalities';
-import { Position } from './schemas/types';
+import { getPersonality, ALL_PERSONALITIES, personalityFromGenome } from './agents/personalities';
+import { Position, FitnessCriteria, AgentGenome } from './schemas/types';
+import { AnalyticsEngine, PredictionEngine, EarlyStateSnapshot, OutcomePrediction } from './analytics';
+import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
+import { FactionManager, LawSystem, LawType } from './civilization';
+import { initializeStanBridge, getStanBridge, getCommentaryStore, StanCommentary } from './stan';
+import { getHistoryManager } from './history';
+import { getGenealogyTracker } from './evolution';
+import { getMetaverseManager } from './metaverse';
 
 const app = express();
 const server = createServer(app);
@@ -29,6 +36,14 @@ let world: World | null = null;
 let engine: SimulationEngine | null = null;
 let logger: EventLogger | null = null;
 let stateManager: StateManager | null = null;
+
+// Cluster state
+let simulationCluster: SimulationCluster | null = null;
+let clusterResults: AggregatedResults | null = null;
+
+// Civilization state
+let factionManager: FactionManager | null = null;
+let lawSystem: LawSystem | null = null;
 
 // WebSocket clients
 const clients = new Set<WebSocket>();
@@ -129,13 +144,35 @@ app.post('/api/simulation/create', (req, res) => {
       visionRadius: 3,
     });
 
-    // Add agents from preset
-    if (finalConfig.agentPersonalities) {
-      finalConfig.agentPersonalities.forEach((personality: any, index: number) => {
+    // Load culture pack if specified
+    let culturePack: any = null;
+    if (finalConfig.culturePackId) {
+      const { getCulturePack } = require('./civilization');
+      culturePack = getCulturePack(finalConfig.culturePackId);
+      if (culturePack) {
+        console.log(`[Simulation] Applying culture pack: ${culturePack.name}`);
+      }
+    }
+
+    // Add agents from initialGenomes or preset personalities
+    if (finalConfig.initialGenomes && finalConfig.initialGenomes.length > 0) {
+      // Use evolved genomes
+      console.log(`[Simulation] Creating agents from ${finalConfig.initialGenomes.length} evolved genomes`);
+
+      finalConfig.initialGenomes.forEach((genome: any, index: number) => {
         const position: Position = {
           x: Math.floor(Math.random() * (finalConfig.worldWidth || 20)),
           y: Math.floor(Math.random() * (finalConfig.worldHeight || 20)),
         };
+
+        // Convert genome to personality
+        let personality = personalityFromGenome(genome);
+
+        // Apply culture pack biases if present
+        if (culturePack) {
+          const { applyCultureTraits } = require('./civilization');
+          personality.traits = applyCultureTraits(personality.traits, culturePack);
+        }
 
         const goals = createGoalsFromPersonality(personality);
 
@@ -144,7 +181,36 @@ app.post('/api/simulation/create', (req, res) => {
           personality,
           position,
           goals,
-          { mock: true }
+          { useMock: true }
+        );
+
+        engine!.addAgent(agent);
+      });
+    } else if (finalConfig.agentPersonalities) {
+      // Use traditional personality templates
+      finalConfig.agentPersonalities.forEach((personality: any, index: number) => {
+        const position: Position = {
+          x: Math.floor(Math.random() * (finalConfig.worldWidth || 20)),
+          y: Math.floor(Math.random() * (finalConfig.worldHeight || 20)),
+        };
+
+        // Apply culture pack biases if present
+        if (culturePack) {
+          const { applyCultureTraits } = require('./civilization');
+          personality = {
+            ...personality,
+            traits: applyCultureTraits(personality.traits, culturePack),
+          };
+        }
+
+        const goals = createGoalsFromPersonality(personality);
+
+        const agent = new LLMAgent(
+          `${personality.name} ${index + 1}`,
+          personality,
+          position,
+          goals,
+          { useMock: true }
         );
 
         engine!.addAgent(agent);
@@ -318,6 +384,59 @@ app.get('/api/simulation/state', (req, res) => {
     worldState,
     logs: logger?.getLogs().slice(-50) || [],
   });
+});
+
+/**
+ * GET /api/simulation/replay
+ * Get the current simulation replay
+ */
+app.get('/api/simulation/replay', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const replay = engine.getReplay();
+    res.json({ replay });
+  } catch (error: any) {
+    console.error('Error fetching replay:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/simulation/replay/cinematic
+ * Get cinematic camera path for the current simulation replay
+ */
+app.get('/api/simulation/replay/cinematic', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const { CinematicReplay } = require('./logging');
+    const replay = engine.getReplay();
+
+    // Get focus option from query params
+    const focusOn = (req.query.focusOn as string) || 'random';
+    const validFocusOptions = ['wars', 'alliances', 'evolution', 'religion', 'random'];
+
+    if (!validFocusOptions.includes(focusOn)) {
+      return res.status(400).json({
+        error: `Invalid focusOn parameter. Must be one of: ${validFocusOptions.join(', ')}`,
+      });
+    }
+
+    // Generate cinematic script
+    const script = CinematicReplay.generateScriptFromReplay(replay, {
+      focusOn: focusOn as any,
+    });
+
+    res.json(script);
+  } catch (error: any) {
+    console.error('Error generating cinematic script:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 /**
@@ -530,7 +649,7 @@ app.post('/api/agents/add', (req, res) => {
         strategy: strategy || 'gatherer',
       });
     } else {
-      agent = new LLMAgent(name, personality, position, goals, { mock: true });
+      agent = new LLMAgent(name, personality, position, goals, { useMock: true });
     }
 
     engine.addAgent(agent);
@@ -551,6 +670,1381 @@ app.post('/api/agents/add', (req, res) => {
   }
 });
 
+/**
+ * GET /api/analytics/heatmap/aggression
+ * Get aggression heatmap for the current simulation
+ */
+app.get('/api/analytics/heatmap/aggression', (req, res) => {
+  if (!engine || !world) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+    const dimensions = world.getDimensions();
+
+    const heatmap = analyticsEngine.generateAggressionHeatmap(
+      state.agents,
+      dimensions.width,
+      dimensions.height
+    );
+
+    res.json({ heatmap });
+  } catch (error: any) {
+    console.error('Error generating aggression heatmap:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/heatmap/cooperation
+ * Get cooperation heatmap for the current simulation
+ */
+app.get('/api/analytics/heatmap/cooperation', (req, res) => {
+  if (!engine || !world) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+    const dimensions = world.getDimensions();
+
+    const heatmap = analyticsEngine.generateCooperationHeatmap(
+      state.agents,
+      dimensions.width,
+      dimensions.height
+    );
+
+    res.json({ heatmap });
+  } catch (error: any) {
+    console.error('Error generating cooperation heatmap:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/relations/graph
+ * Get social graph data with nodes and edges
+ */
+app.get('/api/analytics/relations/graph', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+    const socialGraph = engine.getSocialGraph();
+    const allianceManager = engine.getAllianceManager();
+
+    const graphData = analyticsEngine.buildSocialGraphMatrix(
+      state.agents,
+      socialGraph,
+      allianceManager
+    );
+
+    res.json({ graph: graphData });
+  } catch (error: any) {
+    console.error('Error generating social graph:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/metrics
+ * Get comprehensive analytics metrics
+ */
+app.get('/api/analytics/metrics', (req, res) => {
+  if (!engine || !logger) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+
+    // Get comprehensive metrics
+    const metrics = analyticsEngine.computeMetrics(
+      state.agents,
+      state.actionResults,
+      state.turn
+    );
+
+    // Compute resource flow
+    const resourceFlow = analyticsEngine.computeResourceFlow(
+      state.messages,
+      state.actionResults
+    );
+
+    // Compute negotiation metrics
+    const negotiationMetrics = analyticsEngine.computeNegotiationSuccessRates(
+      state.messages,
+      state.actionResults
+    );
+
+    // Compute survival statistics (with empty death records for now)
+    const survivalStats = analyticsEngine.computeSurvivalRates(
+      state.agents,
+      state.turn,
+      []
+    );
+
+    res.json({
+      metrics,
+      resourceFlow,
+      negotiationMetrics,
+      survivalStats,
+    });
+  } catch (error: any) {
+    console.error('Error computing analytics metrics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/resource-flow
+ * Get resource flow data
+ */
+app.get('/api/analytics/resource-flow', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+
+    const resourceFlow = analyticsEngine.computeResourceFlow(
+      state.messages,
+      state.actionResults
+    );
+
+    res.json({ resourceFlow });
+  } catch (error: any) {
+    console.error('Error computing resource flow:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/survival
+ * Get survival statistics
+ */
+app.get('/api/analytics/survival', (req, res) => {
+  if (!engine) {
+    return res.status(400).json({ error: 'No simulation created' });
+  }
+
+  try {
+    const analyticsEngine = new AnalyticsEngine();
+    const state = engine.getState();
+
+    // TODO: Track actual death records in the simulation
+    const survivalStats = analyticsEngine.computeSurvivalRates(
+      state.agents,
+      state.turn,
+      []
+    );
+
+    res.json({ survivalStats });
+  } catch (error: any) {
+    console.error('Error computing survival statistics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/analytics/civilization
+ * Get civilization-level analytics (factions, stability, conflicts, law compliance)
+ */
+app.get('/api/analytics/civilization', (req, res) => {
+  try {
+    if (!factionManager || !lawSystem) {
+      return res.json({
+        factions: [],
+        factionStability: {},
+        conflictRates: {},
+        lawCompliance: {},
+      });
+    }
+
+    const analyticsEngine = new AnalyticsEngine();
+    const factions = factionManager.listFactions();
+    const laws = lawSystem.listLaws();
+
+    // Compute faction stability
+    const factionStability = analyticsEngine.computeFactionStability(factions);
+
+    // Get simulation data for conflict rates and law compliance
+    let conflictRates = {};
+    let lawCompliance = {};
+
+    if (engine) {
+      const state = engine.getState();
+
+      // Compute inter-faction conflict rates
+      conflictRates = analyticsEngine.computeInterFactionConflictRates(
+        factions,
+        state.actionResults,
+        state.agents
+      );
+
+      // Compute law compliance rates
+      // TODO: Track law violations in simulation state
+      lawCompliance = analyticsEngine.computeLawComplianceRates(
+        laws,
+        factions,
+        state.actionResults,
+        [] // Law violations array (to be implemented)
+      );
+    }
+
+    // Build response with enriched faction data
+    const enrichedFactions = factions.map((faction) => ({
+      ...faction,
+      members: Array.from(faction.members), // Convert Set to Array
+      stability: factionStability[faction.id] || 0,
+      memberCount: faction.members.size,
+    }));
+
+    res.json({
+      factions: enrichedFactions,
+      factionStability,
+      conflictRates,
+      lawCompliance,
+    });
+  } catch (error: any) {
+    console.error('Error computing civilization analytics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/analytics/predict-outcome
+ * Predict simulation outcome based on early-turn data
+ */
+app.post('/api/analytics/predict-outcome', (req, res) => {
+  try {
+    const snapshot: EarlyStateSnapshot = req.body;
+
+    // Validate snapshot
+    if (!snapshot || !snapshot.agentStates || !snapshot.worldSummary || !snapshot.socialSummary) {
+      return res.status(400).json({
+        error: 'Invalid snapshot: must include agentStates, worldSummary, and socialSummary',
+      });
+    }
+
+    // Create prediction engine and predict outcome
+    const predictionEngine = new PredictionEngine();
+
+    // For now, use heuristic-based prediction
+    // In the future, you could train the engine with historical data:
+    // predictionEngine.trainFromHistory(replays);
+
+    const prediction: OutcomePrediction = predictionEngine.predictOutcome(snapshot);
+
+    res.json({ prediction });
+  } catch (error: any) {
+    console.error('Error predicting outcome:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/config
+ * Get current STAN configuration
+ */
+app.get('/api/stan/config', (req, res) => {
+  try {
+    const stan = getStanBridge();
+    const config = stan.getConfig();
+    const stats = stan.getStats();
+
+    res.json({
+      config,
+      stats,
+    });
+  } catch (error: any) {
+    console.error('Error getting STAN config:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/stan/config
+ * Update STAN configuration
+ */
+app.post('/api/stan/config', (req, res) => {
+  try {
+    const stan = getStanBridge();
+    const { enabled, webhookUrl, apiKey, maxEventsPerSecond } = req.body;
+
+    // Validate inputs
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be a boolean' });
+    }
+
+    if (webhookUrl !== undefined && typeof webhookUrl !== 'string') {
+      return res.status(400).json({ error: 'webhookUrl must be a string' });
+    }
+
+    if (maxEventsPerSecond !== undefined) {
+      const rate = Number(maxEventsPerSecond);
+      if (isNaN(rate) || rate < 1 || rate > 100) {
+        return res.status(400).json({ error: 'maxEventsPerSecond must be between 1 and 100' });
+      }
+    }
+
+    // Update configuration
+    const updates: any = {};
+    if (enabled !== undefined) updates.enabled = enabled;
+    if (webhookUrl !== undefined) updates.webhookUrl = webhookUrl;
+    if (apiKey !== undefined) updates.apiKey = apiKey;
+    if (maxEventsPerSecond !== undefined) updates.maxEventsPerSecond = Number(maxEventsPerSecond);
+
+    stan.updateConfig(updates);
+
+    // If enabled was changed, update the bridge state
+    if (enabled !== undefined) {
+      stan.setEnabled(enabled);
+    }
+
+    res.json({
+      success: true,
+      config: stan.getConfig(),
+    });
+  } catch (error: any) {
+    console.error('Error updating STAN config:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/stats
+ * Get STAN bridge statistics
+ */
+app.get('/api/stan/stats', (req, res) => {
+  try {
+    const stan = getStanBridge();
+    const stats = stan.getStats();
+
+    res.json({ stats });
+  } catch (error: any) {
+    console.error('Error getting STAN stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/stan/commentary
+ * Add STAN commentary/annotation (called by external STAN overseer)
+ */
+app.post('/api/stan/commentary', (req, res) => {
+  try {
+    const commentaryStore = getCommentaryStore();
+    const { scope, scopeId, summary, recommendation, severity, metadata } = req.body;
+
+    // Validate required fields
+    if (!scope || !summary) {
+      return res.status(400).json({
+        error: 'Required fields: scope, summary'
+      });
+    }
+
+    // Validate scope
+    const validScopes = ['simulation', 'cluster', 'agent', 'faction', 'global'];
+    if (!validScopes.includes(scope)) {
+      return res.status(400).json({
+        error: `Invalid scope. Must be one of: ${validScopes.join(', ')}`
+      });
+    }
+
+    // Validate severity if provided
+    if (severity && !['info', 'warning', 'critical'].includes(severity)) {
+      return res.status(400).json({
+        error: 'Invalid severity. Must be one of: info, warning, critical'
+      });
+    }
+
+    // Add commentary
+    const commentary = commentaryStore.addCommentary({
+      scope,
+      scopeId,
+      summary,
+      recommendation,
+      severity: severity || 'info',
+      metadata,
+    });
+
+    // Broadcast to WebSocket clients
+    broadcast({
+      type: 'stan_commentary',
+      payload: commentary,
+    });
+
+    res.json({
+      success: true,
+      commentary
+    });
+  } catch (error: any) {
+    console.error('Error adding STAN commentary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/commentary
+ * Get STAN commentary messages
+ */
+app.get('/api/stan/commentary', (req, res) => {
+  try {
+    const commentaryStore = getCommentaryStore();
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
+    const scope = req.query.scope as string | undefined;
+    const scopeId = req.query.scopeId as string | undefined;
+    const severity = req.query.severity as 'info' | 'warning' | 'critical' | undefined;
+
+    let commentaries: StanCommentary[];
+
+    // Filter based on query parameters
+    if (scopeId) {
+      commentaries = commentaryStore.getCommentariesForEntity(scopeId, limit);
+    } else if (scope) {
+      commentaries = commentaryStore.getCommentariesByScope(scope as any, limit);
+    } else if (severity) {
+      commentaries = commentaryStore.getCommentariesBySeverity(severity);
+    } else {
+      commentaries = commentaryStore.getRecentCommentaries(limit);
+    }
+
+    // Check if STAN is enabled
+    const stan = getStanBridge();
+    const stanConfig = stan.getConfig();
+
+    res.json({
+      commentaries,
+      stanEnabled: stanConfig.enabled,
+      hasWebhook: !!stanConfig.webhookUrl,
+      stats: commentaryStore.getStats(),
+    });
+  } catch (error: any) {
+    console.error('Error getting STAN commentary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/stan/commentary
+ * Clear all STAN commentary (admin/debug)
+ */
+app.delete('/api/stan/commentary', (req, res) => {
+  try {
+    const commentaryStore = getCommentaryStore();
+    commentaryStore.clear();
+
+    res.json({
+      success: true,
+      message: 'All commentary cleared'
+    });
+  } catch (error: any) {
+    console.error('Error clearing STAN commentary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/stan/commands
+ * Submit a god-mode command for STAN to execute
+ */
+app.post('/api/stan/commands', (req, res) => {
+  try {
+    const { type, targetAgentId, targetFactionId, worldId, payload, issuedBy } = req.body;
+
+    // Validate command type
+    const validTypes = ['SMITE_AGENT', 'BLESS_AGENT', 'SPAWN_EVENT', 'ALTER_FACTION', 'ADJUST_LAW', 'GLOBAL_MODIFIER'];
+    if (!type || !validTypes.includes(type)) {
+      return res.status(400).json({
+        error: `Invalid command type. Must be one of: ${validTypes.join(', ')}`,
+      });
+    }
+
+    // Get command executor
+    const { getStanCommandExecutor } = require('./stan');
+    const executor = getStanCommandExecutor();
+
+    // Queue the command
+    const command = executor.queueCommand({
+      type,
+      targetAgentId,
+      targetFactionId,
+      worldId,
+      payload: payload || {},
+      issuedBy: issuedBy || 'STAN',
+    });
+
+    res.json({
+      success: true,
+      command,
+      message: 'Command queued for execution',
+    });
+  } catch (error: any) {
+    console.error('Error queueing STAN command:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/commands/recent
+ * Get recently executed STAN commands
+ */
+app.get('/api/stan/commands/recent', (req, res) => {
+  try {
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
+
+    // Validate limit
+    if (isNaN(limit) || limit < 1 || limit > 100) {
+      return res.status(400).json({
+        error: 'limit must be between 1 and 100',
+      });
+    }
+
+    // Get command executor
+    const { getStanCommandExecutor } = require('./stan');
+    const executor = getStanCommandExecutor();
+
+    const history = executor.getHistory(limit);
+    const pending = executor.getPending();
+    const stats = executor.getStats();
+
+    res.json({
+      history,
+      pending,
+      stats,
+    });
+  } catch (error: any) {
+    console.error('Error fetching STAN command history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/commands/pending
+ * Get pending STAN commands
+ */
+app.get('/api/stan/commands/pending', (req, res) => {
+  try {
+    const { getStanCommandExecutor } = require('./stan');
+    const executor = getStanCommandExecutor();
+
+    const pending = executor.getPending();
+
+    res.json({
+      pending,
+      count: pending.length,
+    });
+  } catch (error: any) {
+    console.error('Error fetching pending commands:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/stan/commands/pending
+ * Clear all pending STAN commands
+ */
+app.delete('/api/stan/commands/pending', (req, res) => {
+  try {
+    const { getStanCommandExecutor } = require('./stan');
+    const executor = getStanCommandExecutor();
+
+    executor.clearPending();
+
+    res.json({
+      success: true,
+      message: 'All pending commands cleared',
+    });
+  } catch (error: any) {
+    console.error('Error clearing pending commands:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/cluster/start
+ * Start a cluster of simulations running in parallel
+ */
+app.post('/api/cluster/start', async (req, res) => {
+  try {
+    const { simulationCount, preset: presetName, randomizeSeed, autoAdvance } = req.body;
+
+    if (!simulationCount || simulationCount < 1 || simulationCount > 20) {
+      return res.status(400).json({
+        error: 'simulationCount must be between 1 and 20',
+      });
+    }
+
+    // Load preset
+    const preset = getPreset(presetName || 'cooperative');
+    if (!preset) {
+      return res.status(400).json({ error: 'Invalid preset' });
+    }
+
+    // Create cluster config
+    const clusterConfig: ClusterConfig = {
+      simulationCount,
+      preset,
+      randomizeSeed: randomizeSeed ?? true,
+      autoAdvance: autoAdvance ?? true,
+    };
+
+    console.log(
+      `[Cluster API] Starting cluster with ${simulationCount} simulations (preset: ${preset.name})`
+    );
+
+    // Create and initialize cluster
+    simulationCluster = new SimulationCluster(clusterConfig);
+    simulationCluster.initialize();
+
+    // Run simulations in parallel (async)
+    const clusterId = simulationCluster.getClusterId();
+
+    // Start execution asynchronously
+    simulationCluster.runMultipleSimulationsInParallel().then(() => {
+      console.log(`[Cluster ${clusterId}] All simulations completed`);
+
+      // Aggregate results
+      clusterResults = simulationCluster!.aggregateResults();
+
+      // Broadcast completion to WebSocket clients
+      broadcast({
+        type: 'cluster_completed',
+        data: {
+          clusterId,
+          results: clusterResults,
+        },
+      });
+    }).catch((error) => {
+      console.error(`[Cluster ${clusterId}] Error:`, error);
+    });
+
+    res.json({
+      clusterId,
+      status: 'started',
+      simulationCount,
+      preset: preset.name,
+    });
+  } catch (error: any) {
+    console.error('Error starting cluster:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/cluster/status
+ * Get the status of the running cluster
+ */
+app.get('/api/cluster/status', (req, res) => {
+  if (!simulationCluster) {
+    return res.json({
+      active: false,
+      message: 'No cluster is currently running',
+    });
+  }
+
+  const status = simulationCluster.getStatus();
+  res.json({
+    active: true,
+    ...status,
+  });
+});
+
+/**
+ * GET /api/cluster/results
+ * Get the aggregated results from the cluster
+ */
+app.get('/api/cluster/results', (req, res) => {
+  if (!simulationCluster) {
+    return res.status(400).json({ error: 'No cluster created' });
+  }
+
+  if (!clusterResults) {
+    // Generate results if not already done
+    clusterResults = simulationCluster.aggregateResults();
+  }
+
+  const comparison = simulationCluster.compareSimOutcomes();
+
+  res.json({
+    results: clusterResults,
+    comparison,
+  });
+});
+
+/**
+ * GET /api/cluster/outcomes
+ * Get individual simulation outcomes
+ */
+app.get('/api/cluster/outcomes', (req, res) => {
+  if (!simulationCluster) {
+    return res.status(400).json({ error: 'No cluster created' });
+  }
+
+  const outcomes = simulationCluster.getOutcomes();
+  res.json({ outcomes });
+});
+
+/**
+ * POST /api/cluster/pause
+ * Pause all running simulations in the cluster
+ */
+app.post('/api/cluster/pause', (req, res) => {
+  if (!simulationCluster) {
+    return res.status(400).json({ error: 'No cluster created' });
+  }
+
+  simulationCluster.pauseAll();
+  res.json({ message: 'Cluster paused' });
+});
+
+/**
+ * POST /api/cluster/reset
+ * Reset the cluster
+ */
+app.post('/api/cluster/reset', (req, res) => {
+  if (!simulationCluster) {
+    return res.status(400).json({ error: 'No cluster created' });
+  }
+
+  simulationCluster.resetAll();
+  clusterResults = null;
+  res.json({ message: 'Cluster reset' });
+});
+
+/**
+ * GET /api/evolution/presets-support
+ * Get information about which presets support genome-based seeding
+ */
+app.get('/api/evolution/presets-support', (req, res) => {
+  try {
+    const presetNames = getAllPresetNames();
+    const presetsInfo = presetNames.map((presetName) => {
+      const preset = getPreset(presetName);
+      if (!preset) {
+        return null;
+      }
+
+      return {
+        name: preset.name,
+        description: preset.description,
+        supportsGenomes: true, // All presets now support genome-based seeding
+        expectedAgentCount: preset.agentPersonalities.length,
+        currentMode: preset.initialGenomes ? 'genome' : 'personality',
+        genomeCount: preset.initialGenomes?.length || 0,
+        worldDimensions: {
+          width: preset.worldWidth,
+          height: preset.worldHeight,
+        },
+        maxTurns: preset.maxTurns,
+      };
+    }).filter(Boolean);
+
+    res.json({
+      presets: presetsInfo,
+      totalPresets: presetsInfo.length,
+      message: 'All presets support genome-based seeding. Use initialGenomes field in preset config.',
+    });
+  } catch (error: any) {
+    console.error('Error fetching presets support:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/evolution/next-generation
+ * Generate next generation of agent genomes using evolutionary algorithms
+ */
+app.post('/api/evolution/next-generation', (req, res) => {
+  try {
+    if (!simulationCluster) {
+      return res.status(400).json({ error: 'No cluster created. Run a cluster first.' });
+    }
+
+    const { fitnessCriteria, topK, mutationRate, populationSize } = req.body;
+
+    // Validate fitness criteria
+    if (!fitnessCriteria) {
+      return res.status(400).json({
+        error: 'fitnessCriteria is required',
+        example: {
+          survivalWeight: 1.0,
+          resourceWeight: 0.8,
+          cooperationWeight: 0.6,
+          aggressionWeight: -0.3,
+          goalCompletionWeight: 1.0,
+        },
+      });
+    }
+
+    // Set defaults
+    const criteria: FitnessCriteria = {
+      survivalWeight: fitnessCriteria.survivalWeight ?? 1.0,
+      resourceWeight: fitnessCriteria.resourceWeight ?? 0.8,
+      cooperationWeight: fitnessCriteria.cooperationWeight ?? 0.6,
+      aggressionWeight: fitnessCriteria.aggressionWeight ?? 0.0,
+      goalCompletionWeight: fitnessCriteria.goalCompletionWeight ?? 1.0,
+    };
+
+    const top = topK ?? 5;
+    const mutation = mutationRate ?? 0.1;
+
+    console.log(`[Evolution API] Generating next generation with criteria:`, criteria);
+    console.log(`[Evolution API] Top K: ${top}, Mutation rate: ${mutation}`);
+
+    // Generate next generation
+    const genomes = simulationCluster.generateNextGenerationConfigs(
+      criteria,
+      top,
+      mutation,
+      populationSize
+    );
+
+    const generationIndex = genomes[0]?.generation || 1;
+
+    res.json({
+      generationIndex,
+      genomes,
+      count: genomes.length,
+      fitnessCriteria: criteria,
+      parameters: {
+        topK: top,
+        mutationRate: mutation,
+        populationSize: genomes.length,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error generating next generation:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/evolution/genealogy
+ * Get complete genealogy tree for all evolved genomes
+ */
+app.get('/api/evolution/genealogy', (req, res) => {
+  try {
+    const genealogyTracker = getGenealogyTracker();
+    const tree = genealogyTracker.getTree();
+    const stats = genealogyTracker.getStats();
+
+    res.json({
+      tree,
+      stats,
+    });
+  } catch (error: any) {
+    console.error('Error fetching genealogy:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/evolution/genealogy/:genomeId
+ * Get lineage and details for a specific genome
+ */
+app.get('/api/evolution/genealogy/:genomeId', (req, res) => {
+  try {
+    const { genomeId } = req.params;
+    const genealogyTracker = getGenealogyTracker();
+
+    // Get node for this genome
+    const node = genealogyTracker.getNode(genomeId);
+    if (!node) {
+      return res.status(404).json({ error: `Genome ${genomeId} not found` });
+    }
+
+    // Get lineage (ancestry)
+    const lineage = genealogyTracker.getLineage(genomeId);
+
+    // Get descendants
+    const descendants = genealogyTracker.getDescendants(genomeId);
+
+    // Get siblings
+    const siblings = genealogyTracker.getSiblings(genomeId);
+
+    res.json({
+      node,
+      lineage,
+      descendants,
+      siblings,
+      lineageCount: lineage.length,
+      descendantCount: descendants.length,
+      siblingCount: siblings.length,
+    });
+  } catch (error: any) {
+    console.error('Error fetching genome genealogy:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/metaverse/worlds
+ * Get all worlds in the metaverse
+ */
+app.get('/api/metaverse/worlds', (req, res) => {
+  try {
+    const metaverseManager = getMetaverseManager();
+    const worlds = metaverseManager.listWorlds();
+    const stats = metaverseManager.getStats();
+
+    res.json({
+      worlds,
+      stats,
+    });
+  } catch (error: any) {
+    console.error('Error fetching metaverse worlds:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/metaverse/worlds
+ * Create a new world instance
+ */
+app.post('/api/metaverse/worlds', (req, res) => {
+  try {
+    const { name, seed } = req.body;
+
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ error: 'World name is required' });
+    }
+
+    const metaverseManager = getMetaverseManager();
+    const world = metaverseManager.createWorldInstance(name, seed);
+
+    res.json({
+      success: true,
+      world,
+    });
+  } catch (error: any) {
+    console.error('Error creating world:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/metaverse/links
+ * Get all cross-world links, optionally filtered by worldId
+ */
+app.get('/api/metaverse/links', (req, res) => {
+  try {
+    const { worldId } = req.query;
+    const metaverseManager = getMetaverseManager();
+
+    let links;
+    if (worldId && typeof worldId === 'string') {
+      links = metaverseManager.getLinks(worldId);
+    } else {
+      links = metaverseManager.getAllLinks();
+    }
+
+    res.json({
+      links,
+      count: links.length,
+    });
+  } catch (error: any) {
+    console.error('Error fetching metaverse links:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/metaverse/links
+ * Create a new cross-world link
+ */
+app.post('/api/metaverse/links', (req, res) => {
+  try {
+    const { fromWorldId, toWorldId, type, intensity, meta } = req.body;
+
+    // Validate required fields
+    if (!fromWorldId || !toWorldId) {
+      return res.status(400).json({ error: 'fromWorldId and toWorldId are required' });
+    }
+
+    if (!type || !['PORTAL', 'TRADE_ROUTE', 'WAR_FRONT', 'SIGNAL_LINK'].includes(type)) {
+      return res.status(400).json({
+        error: 'type must be one of: PORTAL, TRADE_ROUTE, WAR_FRONT, SIGNAL_LINK',
+      });
+    }
+
+    if (intensity !== undefined && (typeof intensity !== 'number' || intensity < 0 || intensity > 1)) {
+      return res.status(400).json({ error: 'intensity must be a number between 0 and 1' });
+    }
+
+    const metaverseManager = getMetaverseManager();
+    const link = metaverseManager.registerLink({
+      fromWorldId,
+      toWorldId,
+      type,
+      intensity: intensity ?? 0.5,
+      meta,
+    });
+
+    res.json({
+      success: true,
+      link,
+    });
+  } catch (error: any) {
+    console.error('Error creating link:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/metaverse/apply-effects
+ * Manually trigger cross-world effects
+ */
+app.post('/api/metaverse/apply-effects', (req, res) => {
+  try {
+    const metaverseManager = getMetaverseManager();
+    metaverseManager.applyCrossWorldEffects();
+
+    res.json({
+      success: true,
+      message: 'Cross-world effects applied',
+    });
+  } catch (error: any) {
+    console.error('Error applying cross-world effects:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/factions
+ * Get all factions and their state
+ */
+app.get('/api/civilization/factions', (req, res) => {
+  try {
+    if (!factionManager) {
+      return res.json({ factions: [] });
+    }
+
+    const factions = factionManager.listFactions().map(f => ({
+      ...f,
+      members: Array.from(f.members), // Convert Set to Array for JSON
+      stability: lawSystem ? lawSystem.computeFactionStability(f) : f.cohesion,
+    }));
+
+    res.json({ factions });
+  } catch (error: any) {
+    console.error('Error fetching factions:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/laws
+ * Get all laws in the system
+ */
+app.get('/api/civilization/laws', (req, res) => {
+  try {
+    if (!lawSystem) {
+      return res.json({ laws: [] });
+    }
+
+    const laws = lawSystem.listLaws();
+
+    res.json({ laws });
+  } catch (error: any) {
+    console.error('Error fetching laws:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/beliefs
+ * Get all beliefs in the system
+ */
+app.get('/api/civilization/beliefs', (req, res) => {
+  try {
+    if (!engine) {
+      return res.json({ beliefs: [] });
+    }
+
+    const beliefSystem = engine.getBeliefSystem();
+    const beliefs = beliefSystem.getAllBeliefs();
+
+    res.json({ beliefs });
+  } catch (error: any) {
+    console.error('Error fetching beliefs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/rituals
+ * Get all rituals in the system
+ */
+app.get('/api/civilization/rituals', (req, res) => {
+  try {
+    if (!engine) {
+      return res.json({ rituals: [] });
+    }
+
+    const beliefSystem = engine.getBeliefSystem();
+    const rituals = beliefSystem.getAllRituals();
+
+    res.json({ rituals });
+  } catch (error: any) {
+    console.error('Error fetching rituals:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/civilization/culture-packs
+ * Get all available culture packs
+ */
+app.get('/api/civilization/culture-packs', (req, res) => {
+  try {
+    const { getAllCulturePacks } = require('./civilization');
+    const culturePacks = getAllCulturePacks();
+
+    res.json({ culturePacks });
+  } catch (error: any) {
+    console.error('Error fetching culture packs:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/language/dialects
+ * Get all faction dialects
+ */
+app.get('/api/language/dialects', (req, res) => {
+  try {
+    if (!engine) {
+      return res.json({ dialects: [] });
+    }
+
+    const languageEngine = engine.getLanguageEngine();
+    const dialects = languageEngine.getAllDialects();
+    const stats = languageEngine.getStats();
+
+    res.json({ dialects, stats });
+  } catch (error: any) {
+    console.error('Error fetching dialects:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/language/dialects/:factionId
+ * Get dialect for a specific faction
+ */
+app.get('/api/language/dialects/:factionId', (req, res) => {
+  try {
+    if (!engine) {
+      return res.status(404).json({ error: 'No active simulation' });
+    }
+
+    const { factionId } = req.params;
+    const languageEngine = engine.getLanguageEngine();
+    const dialect = languageEngine.getDialect(factionId);
+
+    if (!dialect) {
+      return res.status(404).json({ error: `Dialect not found for faction ${factionId}` });
+    }
+
+    res.json({ dialect });
+  } catch (error: any) {
+    console.error('Error fetching dialect:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/history
+ * Get historical events with optional filtering
+ * Query params: type, minTurn, maxTurn, tags (comma-separated), severity, factionId
+ */
+app.get('/api/history', (req, res) => {
+  try {
+    const historyManager = getHistoryManager();
+    const { type, minTurn, maxTurn, tags, severity, factionId } = req.query;
+
+    // Build filter object
+    const filter: any = {};
+
+    if (type) {
+      filter.type = type as string;
+    }
+
+    if (minTurn) {
+      filter.minTurn = parseInt(minTurn as string, 10);
+    }
+
+    if (maxTurn) {
+      filter.maxTurn = parseInt(maxTurn as string, 10);
+    }
+
+    if (tags) {
+      // Split comma-separated tags
+      filter.tags = (tags as string).split(',').map(t => t.trim());
+    }
+
+    if (severity) {
+      filter.severity = severity as 'low' | 'medium' | 'high' | 'critical';
+    }
+
+    if (factionId) {
+      filter.factionId = factionId as string;
+    }
+
+    // Get filtered events
+    const events = historyManager.getEvents(filter);
+
+    res.json({
+      events,
+      count: events.length,
+      filter,
+    });
+  } catch (error: any) {
+    console.error('Error fetching history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/history/eras
+ * Get era summaries for the simulation history
+ * Query params: windowSize (default: 20)
+ */
+app.get('/api/history/eras', (req, res) => {
+  try {
+    const historyManager = getHistoryManager();
+    const windowSize = req.query.windowSize
+      ? parseInt(req.query.windowSize as string, 10)
+      : 20;
+
+    // Validate window size
+    if (isNaN(windowSize) || windowSize < 5 || windowSize > 200) {
+      return res.status(400).json({
+        error: 'windowSize must be between 5 and 200',
+      });
+    }
+
+    // Get era summaries
+    const eras = historyManager.getEras(windowSize);
+
+    res.json({
+      eras,
+      count: eras.length,
+      windowSize,
+    });
+  } catch (error: any) {
+    console.error('Error fetching eras:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/civilization/factions/debug-seed
+ * Debug endpoint to seed initial factions for testing
+ */
+app.post('/api/civilization/factions/debug-seed', (req, res) => {
+  try {
+    if (!engine) {
+      return res.status(400).json({ error: 'No active simulation. Create a simulation first.' });
+    }
+
+    // Initialize faction manager and law system if not already done
+    if (!factionManager) {
+      factionManager = new FactionManager();
+    }
+
+    if (!lawSystem) {
+      lawSystem = new LawSystem();
+    }
+
+    const agentStates = engine.getState().agents;
+
+    if (agentStates.length === 0) {
+      return res.status(400).json({ error: 'No agents in simulation' });
+    }
+
+    // Create 2-3 factions from agents
+    const agentsPerFaction = Math.ceil(agentStates.length / 3);
+    const createdFactions = [];
+
+    for (let i = 0; i < Math.min(3, agentStates.length); i++) {
+      const start = i * agentsPerFaction;
+      const end = Math.min(start + agentsPerFaction, agentStates.length);
+      const factionAgentStates = agentStates.slice(start, end);
+
+      if (factionAgentStates.length === 0) break;
+
+      const factionName = `Faction ${String.fromCharCode(65 + i)}`; // A, B, C
+
+      // Calculate faction stats from agent states
+      const avgAggression = factionAgentStates.reduce((sum, a) => sum + a.stats.aggression, 0) / factionAgentStates.length;
+      const avgDiplomacy = factionAgentStates.reduce((sum, a) => sum + a.stats.cooperation, 0) / factionAgentStates.length;
+
+      const faction = factionManager.createFactionFromIds(
+        factionName,
+        factionAgentStates.map(a => a.id),
+        {
+          description: `Auto-generated faction ${i + 1}`,
+          initialResources: {
+            food: 10,
+            water: 10,
+            materials: 5,
+          },
+          aggression: avgAggression,
+          diplomacy: avgDiplomacy,
+          cohesion: 0.7,
+          founded: engine.getCurrentTurn(),
+        }
+      );
+
+      // Add some default laws
+      const noAttackLaw = lawSystem.getLaw('law-no-attack');
+      const cooperationLaw = lawSystem.getLaw('law-cooperation');
+
+      if (noAttackLaw) {
+        factionManager.addLaw(faction.id, noAttackLaw.id);
+      }
+
+      if (cooperationLaw) {
+        factionManager.addLaw(faction.id, cooperationLaw.id);
+      }
+
+      createdFactions.push({
+        ...faction,
+        members: Array.from(faction.members),
+      });
+    }
+
+    res.json({
+      message: `Created ${createdFactions.length} factions`,
+      factions: createdFactions,
+    });
+  } catch (error: any) {
+    console.error('Error seeding factions:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Initialize STAN bridge
+console.log('[Server] Initializing STAN bridge...');
+initializeStanBridge();
+const stanBridge = getStanBridge();
+console.log('[Server] STAN bridge initialized:', {
+  enabled: stanBridge.getConfig().enabled,
+  hasWebhook: !!stanBridge.getConfig().webhookUrl,
+});
+
 // Start server
 const PORT = process.env.PORT || 3001;
 
@@ -565,12 +2059,11 @@ server.listen(PORT, () => {
 ║                                                       ║
 ║  API Documentation:                                   ║
 ║  - POST /api/simulation/create                        ║
-║  - POST /api/simulation/start                         ║
-║  - POST /api/simulation/pause                         ║
-║  - POST /api/simulation/step                          ║
-║  - GET  /api/simulation/state                         ║
-║  - GET  /api/presets                                  ║
-║  - GET  /api/personalities                            ║
+║  - POST /api/cluster/start                            ║
+║  - POST /api/evolution/next-generation                ║
+║  - GET  /api/evolution/presets-support                ║
+║  - GET  /api/cluster/results                          ║
+║  - GET  /api/analytics/metrics                        ║
 ║                                                       ║
 ╚═══════════════════════════════════════════════════════╝
   `);

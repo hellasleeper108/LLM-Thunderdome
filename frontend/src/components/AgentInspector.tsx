@@ -5,7 +5,6 @@
 
 import React from 'react';
 import { useStore } from '../store';
-import { AgentStats } from '../types';
 
 export const AgentInspector: React.FC = () => {
   const { selectedAgent, simulation } = useStore();

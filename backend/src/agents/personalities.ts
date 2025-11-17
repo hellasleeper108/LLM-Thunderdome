@@ -3,7 +3,7 @@
  * Pre-defined personality configurations for quick agent creation
  */
 
-import { Personality } from '../schemas/types';
+import { Personality, AgentGenome } from '../schemas/types';
 
 /**
  * Cooperative Helper
@@ -216,4 +216,128 @@ export function getPersonality(name: string): Personality | null {
  */
 export function getRandomPersonality(): Personality {
   return ALL_PERSONALITIES[Math.floor(Math.random() * ALL_PERSONALITIES.length)];
+}
+
+/**
+ * Create a Personality configuration from an evolved AgentGenome
+ * Maps genome traits to personality traits
+ * @param genome The evolved agent genome
+ * @returns A Personality configuration ready for agent creation
+ */
+export function personalityFromGenome(genome: AgentGenome): Personality {
+  // Calculate energy from other traits (average of cooperation, curiosity, and riskTolerance)
+  const energy = Math.round(
+    (genome.traits.cooperation + genome.traits.curiosity + genome.traits.riskTolerance) / 3
+  );
+
+  // Generate a descriptive name based on genome characteristics
+  const name = generateGenomeName(genome);
+
+  // Generate description based on traits
+  const description = generateGenomeDescription(genome);
+
+  return {
+    name,
+    traits: {
+      energy,
+      aggression: genome.traits.aggression,
+      cooperation: genome.traits.cooperation,
+      riskTolerance: genome.traits.riskTolerance,
+      curiosity: genome.traits.curiosity,
+      empathy: genome.traits.empathy,
+    },
+    description,
+  };
+}
+
+/**
+ * Generate a name for a genome-based personality
+ */
+function generateGenomeName(genome: AgentGenome): string {
+  const gen = genome.generation;
+  const baseId = genome.basePersonalityId || 'Unknown';
+
+  // If it's a first-generation or has a clear base personality, use that
+  if (gen === 0 || gen === 1) {
+    return `${baseId} (Gen ${gen})`;
+  }
+
+  // For later generations, create a descriptive name based on dominant traits
+  const traits = genome.traits;
+  const dominantTraits: string[] = [];
+
+  if (traits.aggression > 70) dominantTraits.push('Aggressive');
+  else if (traits.aggression < 30) dominantTraits.push('Peaceful');
+
+  if (traits.cooperation > 70) dominantTraits.push('Cooperative');
+  else if (traits.cooperation < 30) dominantTraits.push('Selfish');
+
+  if (traits.empathy > 70) dominantTraits.push('Empathetic');
+  if (traits.curiosity > 70) dominantTraits.push('Curious');
+  if (traits.riskTolerance > 70) dominantTraits.push('Bold');
+  else if (traits.riskTolerance < 30) dominantTraits.push('Cautious');
+
+  if (dominantTraits.length === 0) {
+    dominantTraits.push('Balanced');
+  }
+
+  return `${dominantTraits.join(' ')} (Gen ${gen})`;
+}
+
+/**
+ * Generate a description for a genome-based personality
+ */
+function generateGenomeDescription(genome: AgentGenome): string {
+  const traits = genome.traits;
+  const parts: string[] = [];
+
+  // Generation info
+  if (genome.generation > 0) {
+    parts.push(`Generation ${genome.generation} evolved agent.`);
+    if (genome.parentIds && genome.parentIds.length > 0) {
+      parts.push(`Descended from ${genome.parentIds.length} parent(s).`);
+    }
+  }
+
+  // Trait descriptions
+  if (traits.aggression > 70) {
+    parts.push('Highly aggressive and combat-oriented.');
+  } else if (traits.aggression < 30) {
+    parts.push('Peaceful and conflict-averse.');
+  }
+
+  if (traits.cooperation > 70) {
+    parts.push('Strongly values cooperation and teamwork.');
+  } else if (traits.cooperation < 30) {
+    parts.push('Self-centered with low regard for others.');
+  }
+
+  if (traits.empathy > 70) {
+    parts.push('Deeply empathetic and considerate of others.');
+  } else if (traits.empathy < 30) {
+    parts.push('Lacks empathy and focus on self-interest.');
+  }
+
+  if (traits.curiosity > 70) {
+    parts.push('Extremely curious and exploratory.');
+  }
+
+  if (traits.riskTolerance > 70) {
+    parts.push('Takes bold risks without hesitation.');
+  } else if (traits.riskTolerance < 30) {
+    parts.push('Cautious and risk-averse in decision-making.');
+  }
+
+  // Additional traits from genome (cunning, loyalty)
+  if (traits.cunning > 70) {
+    parts.push('Highly cunning and strategic.');
+  }
+
+  if (traits.loyalty > 70) {
+    parts.push('Extremely loyal to allies.');
+  } else if (traits.loyalty < 30) {
+    parts.push('Lacks loyalty and easily betrays others.');
+  }
+
+  return parts.join(' ');
 }
