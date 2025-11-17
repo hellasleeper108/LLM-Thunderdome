@@ -1944,7 +1944,7 @@ export class SimulationEngine {
     const relationships = this.socialGraph.getAllRelationshipData();
     if (relationships.length === 0) return 0;
 
-    const totalTrust = relationships.reduce((sum, rel) => sum + rel.trust, 0);
+    const totalTrust = relationships.reduce((sum, rel) => sum + rel.weights.trust, 0);
     return totalTrust / relationships.length;
   }
 
@@ -1955,7 +1955,7 @@ export class SimulationEngine {
     const relationships = this.socialGraph.getAllRelationshipData();
     if (relationships.length === 0) return 0;
 
-    const totalFear = relationships.reduce((sum, rel) => sum + rel.fear, 0);
+    const totalFear = relationships.reduce((sum, rel) => sum + rel.weights.fear, 0);
     return totalFear / relationships.length;
   }
 

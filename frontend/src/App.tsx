@@ -14,6 +14,7 @@ import { SimulationControls } from './components/SimulationControls';
 import { ReplayViewer } from './components/ReplayViewer';
 import { AnalyticsDashboard } from './components/AnalyticsDashboard';
 import { ClusterControlPanel } from './components/ClusterControlPanel';
+import { StanCommentaryPanel } from './components/StanCommentaryPanel';
 
 type ViewMode = 'simulation' | 'analytics' | 'cluster';
 type RenderMode = '2d' | '3d';
@@ -22,6 +23,7 @@ function App() {
   const { setSimulation, setWorld, setLogs, addLog, setWebSocket, setConnected } = useStore();
   const [viewMode, setViewMode] = useState<ViewMode>('simulation');
   const [renderMode, setRenderMode] = useState<RenderMode>('2d');
+  const [showStanPanel, setShowStanPanel] = useState(false);
 
   useEffect(() => {
     // Initialize WebSocket connection
@@ -67,6 +69,11 @@ function App() {
           }
           break;
 
+        case 'stan_commentary':
+          // STAN commentary received - panel will auto-refresh via polling
+          console.log('STAN commentary received:', data.payload);
+          break;
+
         default:
           console.log('Unhandled WebSocket message type:', data.type);
       }
@@ -108,6 +115,18 @@ function App() {
                 {useStore.getState().connected ? 'Connected' : 'Disconnected'}
               </span>
             </div>
+            <button
+              onClick={() => setShowStanPanel(!showStanPanel)}
+              className={`px-4 py-2 rounded transition-colors flex items-center gap-2 ${
+                showStanPanel
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              }`}
+              title="Toggle STAN Commentary Panel"
+            >
+              <span>🤖</span>
+              <span className="text-sm font-medium">STAN</span>
+            </button>
           </div>
         </div>
 
@@ -213,6 +232,41 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* STAN Commentary Sidebar */}
+      <div
+        className={`fixed top-0 right-0 h-full w-96 bg-gray-900 border-l border-gray-700 shadow-2xl transform transition-transform duration-300 ease-in-out z-50 ${
+          showStanPanel ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <div className="h-full flex flex-col">
+          {/* Close button */}
+          <div className="p-2 border-b border-gray-700 flex justify-end">
+            <button
+              onClick={() => setShowStanPanel(false)}
+              className="text-gray-400 hover:text-white transition-colors p-2"
+              title="Close STAN Panel"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Panel content */}
+          <div className="flex-1 min-h-0">
+            <StanCommentaryPanel />
+          </div>
+        </div>
+      </div>
+
+      {/* Backdrop overlay when STAN panel is open */}
+      {showStanPanel && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-40"
+          onClick={() => setShowStanPanel(false)}
+        />
+      )}
     </div>
   );
 }

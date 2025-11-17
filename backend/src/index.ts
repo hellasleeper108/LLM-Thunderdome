@@ -18,7 +18,7 @@ import { Position, FitnessCriteria, AgentGenome } from './schemas/types';
 import { AnalyticsEngine, PredictionEngine, EarlyStateSnapshot, OutcomePrediction } from './analytics';
 import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
 import { FactionManager, LawSystem, LawType } from './civilization';
-import { initializeStanBridge, getStanBridge } from './stan';
+import { initializeStanBridge, getStanBridge, getCommentaryStore, StanCommentary } from './stan';
 
 const app = express();
 const server = createServer(app);
@@ -951,6 +951,123 @@ app.get('/api/stan/stats', (req, res) => {
     res.json({ stats });
   } catch (error: any) {
     console.error('Error getting STAN stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/stan/commentary
+ * Add STAN commentary/annotation (called by external STAN overseer)
+ */
+app.post('/api/stan/commentary', (req, res) => {
+  try {
+    const commentaryStore = getCommentaryStore();
+    const { scope, scopeId, summary, recommendation, severity, metadata } = req.body;
+
+    // Validate required fields
+    if (!scope || !summary) {
+      return res.status(400).json({
+        error: 'Required fields: scope, summary'
+      });
+    }
+
+    // Validate scope
+    const validScopes = ['simulation', 'cluster', 'agent', 'faction', 'global'];
+    if (!validScopes.includes(scope)) {
+      return res.status(400).json({
+        error: `Invalid scope. Must be one of: ${validScopes.join(', ')}`
+      });
+    }
+
+    // Validate severity if provided
+    if (severity && !['info', 'warning', 'critical'].includes(severity)) {
+      return res.status(400).json({
+        error: 'Invalid severity. Must be one of: info, warning, critical'
+      });
+    }
+
+    // Add commentary
+    const commentary = commentaryStore.addCommentary({
+      scope,
+      scopeId,
+      summary,
+      recommendation,
+      severity: severity || 'info',
+      metadata,
+    });
+
+    // Broadcast to WebSocket clients
+    broadcast({
+      type: 'stan_commentary',
+      payload: commentary,
+    });
+
+    res.json({
+      success: true,
+      commentary
+    });
+  } catch (error: any) {
+    console.error('Error adding STAN commentary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stan/commentary
+ * Get STAN commentary messages
+ */
+app.get('/api/stan/commentary', (req, res) => {
+  try {
+    const commentaryStore = getCommentaryStore();
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 20;
+    const scope = req.query.scope as string | undefined;
+    const scopeId = req.query.scopeId as string | undefined;
+    const severity = req.query.severity as 'info' | 'warning' | 'critical' | undefined;
+
+    let commentaries: StanCommentary[];
+
+    // Filter based on query parameters
+    if (scopeId) {
+      commentaries = commentaryStore.getCommentariesForEntity(scopeId, limit);
+    } else if (scope) {
+      commentaries = commentaryStore.getCommentariesByScope(scope as any, limit);
+    } else if (severity) {
+      commentaries = commentaryStore.getCommentariesBySeverity(severity);
+    } else {
+      commentaries = commentaryStore.getRecentCommentaries(limit);
+    }
+
+    // Check if STAN is enabled
+    const stan = getStanBridge();
+    const stanConfig = stan.getConfig();
+
+    res.json({
+      commentaries,
+      stanEnabled: stanConfig.enabled,
+      hasWebhook: !!stanConfig.webhookUrl,
+      stats: commentaryStore.getStats(),
+    });
+  } catch (error: any) {
+    console.error('Error getting STAN commentary:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/stan/commentary
+ * Clear all STAN commentary (admin/debug)
+ */
+app.delete('/api/stan/commentary', (req, res) => {
+  try {
+    const commentaryStore = getCommentaryStore();
+    commentaryStore.clear();
+
+    res.json({
+      success: true,
+      message: 'All commentary cleared'
+    });
+  } catch (error: any) {
+    console.error('Error clearing STAN commentary:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -11,3 +11,11 @@ export {
   type StanEvent,
   type StanEventType,
 } from './StanBridge';
+
+export {
+  StanCommentaryStore,
+  getCommentaryStore,
+  setCommentaryStore,
+  type StanCommentary,
+  type CommentaryScope,
+} from './StanCommentaryStore';
