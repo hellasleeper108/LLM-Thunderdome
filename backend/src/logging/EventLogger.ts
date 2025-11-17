@@ -7,6 +7,7 @@ import { EventLog } from '../schemas/types';
 import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getHistoryManager } from '../history/HistoryManager';
 
 export interface LoggerConfig {
   maxLogs?: number; // Maximum logs to keep in memory
@@ -51,6 +52,66 @@ export class EventLogger {
     if (this.config.autoExport) {
       this.appendToFile(log);
     }
+
+    // Record major events in history
+    if (this.isMajorEvent(log)) {
+      try {
+        const historyManager = getHistoryManager();
+        historyManager.recordFromLoggedEvent(log);
+      } catch (error) {
+        // Silently fail if history manager is not available
+        console.warn('[EventLogger] Failed to record to history:', error);
+      }
+    }
+  }
+
+  /**
+   * Determine if an event is major enough for history
+   */
+  private isMajorEvent(log: EventLog): boolean {
+    const majorTypes = [
+      'religion_born',
+      'ritual_performed',
+      'interaction',
+      'event',
+    ];
+
+    // Include by type
+    if (majorTypes.includes(log.type)) {
+      return true;
+    }
+
+    // Include events with multiple agents (3+)
+    if (log.agentIds && log.agentIds.length >= 3) {
+      return true;
+    }
+
+    // Include events with specific keywords
+    const desc = log.description.toLowerCase();
+    const majorKeywords = [
+      'alliance',
+      'attack',
+      'killed',
+      'faction',
+      'law',
+      'disaster',
+      'storm',
+      'evolved',
+      'merged',
+      'war',
+      'battle',
+    ];
+
+    if (majorKeywords.some(keyword => desc.includes(keyword))) {
+      return true;
+    }
+
+    // Include events with high severity
+    if (log.metadata?.severity === 'high' || log.metadata?.severity === 'critical') {
+      return true;
+    }
+
+    return false;
   }
 
   /**

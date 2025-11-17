@@ -104,16 +104,47 @@ interface CivilizationAnalytics {
   };
 }
 
+interface HistoricalEvent {
+  id: string;
+  turn: number;
+  type: string;
+  title: string;
+  description: string;
+  agentsInvolved: string[];
+  factionsInvolved: string[];
+  worldLocation?: { x: number; y: number };
+  tags: string[];
+  timestamp: number;
+  severity?: 'low' | 'medium' | 'high' | 'critical';
+}
+
+interface EraSummary {
+  title: string;
+  startTurn: number;
+  endTurn: number;
+  keyEvents: HistoricalEvent[];
+  totalEvents: number;
+  dominantType: string;
+  tags: string[];
+}
+
+interface HistoryData {
+  events: HistoricalEvent[];
+  count: number;
+  eras?: EraSummary[];
+}
+
 const API_BASE = 'http://localhost:3001/api';
 
 export function AnalyticsDashboard() {
   const simulation = useStore((state) => state.simulation);
-  const [activeTab, setActiveTab] = useState<'overview' | 'heatmaps' | 'graph' | 'civilization'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'heatmaps' | 'graph' | 'civilization' | 'history'>('overview');
   const [metrics, setMetrics] = useState<AnalyticsMetrics | null>(null);
   const [aggressionHeatmap, setAggressionHeatmap] = useState<Heatmap | null>(null);
   const [cooperationHeatmap, setCooperationHeatmap] = useState<Heatmap | null>(null);
   const [socialGraph, setSocialGraph] = useState<SocialGraphData | null>(null);
   const [civilizationData, setCivilizationData] = useState<CivilizationAnalytics | null>(null);
+  const [historyData, setHistoryData] = useState<HistoryData | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Fetch analytics data
@@ -157,6 +188,26 @@ export function AnalyticsDashboard() {
         if (civRes.ok) {
           const data = await civRes.json();
           setCivilizationData(data);
+        }
+      }
+
+      // Fetch history data if on history tab
+      if (activeTab === 'history') {
+        const historyRes = await fetch(`${API_BASE}/history`);
+        if (historyRes.ok) {
+          const data = await historyRes.json();
+          setHistoryData(data);
+        }
+
+        const erasRes = await fetch(`${API_BASE}/history/eras`);
+        if (erasRes.ok) {
+          const data = await erasRes.json();
+          setHistoryData(prev => ({
+            ...prev,
+            events: prev?.events || [],
+            count: prev?.count || 0,
+            eras: data.eras,
+          }));
         }
       }
     } catch (error) {
@@ -237,6 +288,16 @@ export function AnalyticsDashboard() {
           >
             Civilization
           </button>
+          <button
+            onClick={() => setActiveTab('history')}
+            className={`px-4 py-2 rounded ${
+              activeTab === 'history'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            History
+          </button>
         </div>
       </div>
 
@@ -258,6 +319,10 @@ export function AnalyticsDashboard() {
 
         {activeTab === 'civilization' && (
           <CivilizationTab civilizationData={civilizationData} loading={loading} />
+        )}
+
+        {activeTab === 'history' && (
+          <HistoryTab historyData={historyData} loading={loading} />
         )}
       </div>
     </div>
@@ -653,6 +718,258 @@ function MetricCard({
             <span className="text-white font-semibold">{metric.value}</span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// History Tab Component
+function HistoryTab({
+  historyData,
+  loading,
+}: {
+  historyData: HistoryData | null;
+  loading: boolean;
+}) {
+  const [selectedEvent, setSelectedEvent] = useState<HistoricalEvent | null>(null);
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [tagFilter, setTagFilter] = useState<string>('all');
+
+  if (loading) {
+    return <div className="text-gray-400">Loading history...</div>;
+  }
+
+  if (!historyData || historyData.events.length === 0) {
+    return (
+      <div className="text-gray-400">
+        No historical events recorded yet. Major events will appear here as the simulation progresses.
+      </div>
+    );
+  }
+
+  // Get unique types and tags
+  const eventTypes = ['all', ...new Set(historyData.events.map(e => e.type))];
+  const allTags = new Set<string>();
+  historyData.events.forEach(e => e.tags.forEach(tag => allTags.add(tag)));
+  const tags = ['all', ...Array.from(allTags)];
+
+  // Filter events
+  const filteredEvents = historyData.events.filter(event => {
+    if (typeFilter !== 'all' && event.type !== typeFilter) return false;
+    if (tagFilter !== 'all' && !event.tags.includes(tagFilter)) return false;
+    return true;
+  });
+
+  // Get severity color
+  const getSeverityColor = (severity?: string) => {
+    switch (severity) {
+      case 'critical': return 'text-red-500';
+      case 'high': return 'text-orange-500';
+      case 'medium': return 'text-yellow-500';
+      case 'low': return 'text-blue-400';
+      default: return 'text-gray-400';
+    }
+  };
+
+  // Get event type icon
+  const getEventIcon = (type: string) => {
+    const iconMap: Record<string, string> = {
+      war: '⚔️',
+      alliance: '🤝',
+      belief: '🙏',
+      ritual: '✨',
+      faction_formed: '🏛️',
+      faction_merged: '🔗',
+      law_created: '⚖️',
+      law_violated: '⚠️',
+      disaster: '🌪️',
+      evolution: '🧬',
+      resource: '📦',
+      communication: '💬',
+    };
+    return iconMap[type] || '•';
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xl font-bold text-white">World History</h3>
+        <div className="text-sm text-gray-400">
+          {filteredEvents.length} of {historyData.count} events
+        </div>
+      </div>
+
+      {/* Era Summaries */}
+      {historyData.eras && historyData.eras.length > 0 && (
+        <div>
+          <h4 className="text-lg font-bold text-white mb-3">Historical Eras</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {historyData.eras.map((era, idx) => (
+              <div key={idx} className="bg-gray-800 rounded p-4">
+                <h5 className="font-bold text-white mb-2">{era.title}</h5>
+                <div className="text-sm text-gray-400 mb-2">
+                  Turns {era.startTurn}-{era.endTurn}
+                </div>
+                <div className="text-xs text-gray-500 mb-2">
+                  {era.totalEvents} events • Dominant: {era.dominantType}
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {era.tags.slice(0, 5).map((tag, i) => (
+                    <span key={i} className="text-xs bg-gray-700 px-2 py-0.5 rounded">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="flex gap-4 items-center">
+        <div>
+          <label className="text-sm text-gray-400 mr-2">Type:</label>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="bg-gray-700 text-white text-sm rounded px-3 py-1.5 border border-gray-600"
+          >
+            {eventTypes.map(type => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="text-sm text-gray-400 mr-2">Tag:</label>
+          <select
+            value={tagFilter}
+            onChange={(e) => setTagFilter(e.target.value)}
+            className="bg-gray-700 text-white text-sm rounded px-3 py-1.5 border border-gray-600"
+          >
+            {tags.map(tag => (
+              <option key={tag} value={tag}>{tag}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Timeline */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Events List (Timeline) */}
+        <div className="lg:col-span-2">
+          <h4 className="text-lg font-bold text-white mb-3">Events Timeline</h4>
+          <div className="space-y-2 max-h-[600px] overflow-y-auto">
+            {filteredEvents.map((event) => (
+              <div
+                key={event.id}
+                onClick={() => setSelectedEvent(event)}
+                className={`bg-gray-800 rounded p-3 cursor-pointer transition-colors ${
+                  selectedEvent?.id === event.id
+                    ? 'ring-2 ring-blue-500'
+                    : 'hover:bg-gray-750'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="text-2xl">{getEventIcon(event.type)}</div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-white">{event.title}</span>
+                      <span className="text-xs text-gray-500">Turn {event.turn}</span>
+                    </div>
+                    <p className="text-sm text-gray-300 mb-2">{event.description}</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs bg-gray-700 px-2 py-0.5 rounded">
+                        {event.type}
+                      </span>
+                      {event.severity && (
+                        <span className={`text-xs px-2 py-0.5 rounded ${getSeverityColor(event.severity)}`}>
+                          {event.severity}
+                        </span>
+                      )}
+                      {event.tags.slice(0, 3).map((tag, i) => (
+                        <span key={i} className="text-xs bg-blue-900/30 text-blue-400 px-2 py-0.5 rounded">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Event Details Panel */}
+        <div className="lg:col-span-1">
+          <h4 className="text-lg font-bold text-white mb-3">Event Details</h4>
+          {selectedEvent ? (
+            <div className="bg-gray-800 rounded p-4 space-y-3">
+              <div>
+                <div className="text-sm text-gray-400 mb-1">Title</div>
+                <div className="text-white font-bold">{selectedEvent.title}</div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-400 mb-1">Turn</div>
+                <div className="text-white">{selectedEvent.turn}</div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-400 mb-1">Type</div>
+                <div className="text-white">{selectedEvent.type}</div>
+              </div>
+              {selectedEvent.severity && (
+                <div>
+                  <div className="text-sm text-gray-400 mb-1">Severity</div>
+                  <div className={`font-semibold ${getSeverityColor(selectedEvent.severity)}`}>
+                    {selectedEvent.severity}
+                  </div>
+                </div>
+              )}
+              <div>
+                <div className="text-sm text-gray-400 mb-1">Description</div>
+                <div className="text-white text-sm">{selectedEvent.description}</div>
+              </div>
+              {selectedEvent.agentsInvolved.length > 0 && (
+                <div>
+                  <div className="text-sm text-gray-400 mb-1">Agents Involved</div>
+                  <div className="text-white text-sm">
+                    {selectedEvent.agentsInvolved.join(', ')}
+                  </div>
+                </div>
+              )}
+              {selectedEvent.factionsInvolved.length > 0 && (
+                <div>
+                  <div className="text-sm text-gray-400 mb-1">Factions Involved</div>
+                  <div className="text-white text-sm">
+                    {selectedEvent.factionsInvolved.join(', ')}
+                  </div>
+                </div>
+              )}
+              {selectedEvent.worldLocation && (
+                <div>
+                  <div className="text-sm text-gray-400 mb-1">Location</div>
+                  <div className="text-white text-sm">
+                    ({selectedEvent.worldLocation.x}, {selectedEvent.worldLocation.y})
+                  </div>
+                </div>
+              )}
+              <div>
+                <div className="text-sm text-gray-400 mb-1">Tags</div>
+                <div className="flex flex-wrap gap-1">
+                  {selectedEvent.tags.map((tag, i) => (
+                    <span key={i} className="text-xs bg-blue-900/30 text-blue-400 px-2 py-1 rounded">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-gray-800 rounded p-4 text-gray-400 text-sm">
+              Click on an event to see details
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

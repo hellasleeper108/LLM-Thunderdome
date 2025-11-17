@@ -19,6 +19,7 @@ import { AnalyticsEngine, PredictionEngine, EarlyStateSnapshot, OutcomePredictio
 import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
 import { FactionManager, LawSystem, LawType } from './civilization';
 import { initializeStanBridge, getStanBridge, getCommentaryStore, StanCommentary } from './stan';
+import { getHistoryManager } from './history';
 
 const app = express();
 const server = createServer(app);
@@ -1496,6 +1497,91 @@ app.get('/api/language/dialects/:factionId', (req, res) => {
     res.json({ dialect });
   } catch (error: any) {
     console.error('Error fetching dialect:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/history
+ * Get historical events with optional filtering
+ * Query params: type, minTurn, maxTurn, tags (comma-separated), severity, factionId
+ */
+app.get('/api/history', (req, res) => {
+  try {
+    const historyManager = getHistoryManager();
+    const { type, minTurn, maxTurn, tags, severity, factionId } = req.query;
+
+    // Build filter object
+    const filter: any = {};
+
+    if (type) {
+      filter.type = type as string;
+    }
+
+    if (minTurn) {
+      filter.minTurn = parseInt(minTurn as string, 10);
+    }
+
+    if (maxTurn) {
+      filter.maxTurn = parseInt(maxTurn as string, 10);
+    }
+
+    if (tags) {
+      // Split comma-separated tags
+      filter.tags = (tags as string).split(',').map(t => t.trim());
+    }
+
+    if (severity) {
+      filter.severity = severity as 'low' | 'medium' | 'high' | 'critical';
+    }
+
+    if (factionId) {
+      filter.factionId = factionId as string;
+    }
+
+    // Get filtered events
+    const events = historyManager.getEvents(filter);
+
+    res.json({
+      events,
+      count: events.length,
+      filter,
+    });
+  } catch (error: any) {
+    console.error('Error fetching history:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/history/eras
+ * Get era summaries for the simulation history
+ * Query params: windowSize (default: 20)
+ */
+app.get('/api/history/eras', (req, res) => {
+  try {
+    const historyManager = getHistoryManager();
+    const windowSize = req.query.windowSize
+      ? parseInt(req.query.windowSize as string, 10)
+      : 20;
+
+    // Validate window size
+    if (isNaN(windowSize) || windowSize < 5 || windowSize > 200) {
+      return res.status(400).json({
+        error: 'windowSize must be between 5 and 200',
+      });
+    }
+
+    // Get era summaries
+    const eras = historyManager.getEras(windowSize);
+
+    res.json({
+      eras,
+      count: eras.length,
+      windowSize,
+    });
+  } catch (error: any) {
+    console.error('Error fetching eras:', error);
     res.status(500).json({ error: error.message });
   }
 });
