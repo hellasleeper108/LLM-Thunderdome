@@ -15,7 +15,7 @@ import { LLMAgent, ScriptedAgent } from './agents';
 import { getPreset, getAllPresetNames, createGoalsFromPersonality } from './simulations';
 import { getPersonality, ALL_PERSONALITIES, personalityFromGenome } from './agents/personalities';
 import { Position, FitnessCriteria, AgentGenome } from './schemas/types';
-import { AnalyticsEngine } from './analytics';
+import { AnalyticsEngine, PredictionEngine, EarlyStateSnapshot, OutcomePrediction } from './analytics';
 import { SimulationCluster, ClusterConfig, AggregatedResults } from './cluster';
 import { FactionManager, LawSystem, LawType } from './civilization';
 
@@ -834,6 +834,37 @@ app.get('/api/analytics/civilization', (req, res) => {
     });
   } catch (error: any) {
     console.error('Error computing civilization analytics:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/analytics/predict-outcome
+ * Predict simulation outcome based on early-turn data
+ */
+app.post('/api/analytics/predict-outcome', (req, res) => {
+  try {
+    const snapshot: EarlyStateSnapshot = req.body;
+
+    // Validate snapshot
+    if (!snapshot || !snapshot.agentStates || !snapshot.worldSummary || !snapshot.socialSummary) {
+      return res.status(400).json({
+        error: 'Invalid snapshot: must include agentStates, worldSummary, and socialSummary',
+      });
+    }
+
+    // Create prediction engine and predict outcome
+    const predictionEngine = new PredictionEngine();
+
+    // For now, use heuristic-based prediction
+    // In the future, you could train the engine with historical data:
+    // predictionEngine.trainFromHistory(replays);
+
+    const prediction: OutcomePrediction = predictionEngine.predictOutcome(snapshot);
+
+    res.json({ prediction });
+  } catch (error: any) {
+    console.error('Error predicting outcome:', error);
     res.status(500).json({ error: error.message });
   }
 });
